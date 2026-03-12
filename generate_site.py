@@ -928,6 +928,7 @@ def render_html(
     categories: dict[str, list[Article]],
     holidays: list[Holiday],
     sports: dict[str, Any],
+    digest_meta: dict[str, Any],
     generated_at: datetime,
 ) -> str:
     digest = normalize_digest_payload(digest)
@@ -937,6 +938,9 @@ def render_html(
     weekend_cards = "".join(forecast_card("Fin de semana", day) for day in weather["weekend"])
     holiday_cards = "".join(holiday_card(holiday) for holiday in holidays)
     sports_errors = "".join(f"<li>{html.escape(item)}</li>" for item in sports.get("errors", []))
+    llm_status = ""
+    if digest_meta.get("source") != "azure_llm":
+        llm_status = '<p class="status-banner status-error">No hubo conexion con Azure OpenAI. Se muestra el fallback local.</p>'
     hourly_cards = []
     for hour in weather["next_hours"]:
         hourly_cards.append(
@@ -1021,6 +1025,7 @@ def render_html(
           <p class="eyebrow">Frankfurt operativo</p>
           <h1>{html.escape(digest.get("headline", "Briefing local para Frankfurt"))}</h1>
           <p class="hero-text">Actualizado el {html.escape(format_datetime(generated_at))}. Solo incluye noticias de las ultimas 24 horas, clima de hoy y manana, proximo fin de semana y festivos cercanos.</p>
+          {llm_status}
         </div>
         <div class="weather-panel">
           <div class="weather-main">
@@ -1140,7 +1145,7 @@ def main() -> int:
     if errors:
         digest["watchlist"] = list(digest.get("watchlist", [])) + [f"Error de captura: {item}" for item in errors[:2]]
     write_output(
-        render_html(weather, digest, categories, holidays, sports, generated_at),
+        render_html(weather, digest, categories, holidays, sports, digest_meta, generated_at),
         {
             "generated_at": generated_at.isoformat(),
             "stories": sum(len(items) for items in categories.values()),
