@@ -1,0 +1,4 @@
+interface:
+  display_name: "Frankfurt News Briefing"
+  short_description: "Noticias, clima y festivos de Frankfurt con foco operativo"
+  default_prompt: "Genera un informe de noticias de Frankfurt con clima y festivos cercanos."
