@@ -46,6 +46,28 @@ CATEGORY_CONFIGS = [
         "query": 'Frankfurt (Wohnen OR Miete OR Bildung OR Gesundheit OR Gesellschaft OR Kultur OR Wirtschaft)',
         "limit": 5,
     },
+    {
+        "key": "germany_economy",
+        "label": "Alemania: economia y finanzas",
+        "query": 'Deutschland (Wirtschaft OR Finanzen OR DAX OR Banken OR Inflation OR Unternehmen OR Boerse)',
+        "limit": 5,
+    },
+    {
+        "key": "germany_culture",
+        "label": "Alemania: cultura y conciertos",
+        "query": 'Deutschland (Kultur OR Konzert OR Festival OR Oper OR Ausstellung OR Museum OR Tournee)',
+        "limit": 5,
+    },
+]
+
+SPORTSDB_BASE_URL = "https://www.thesportsdb.com/api/v1/json/3"
+CHAMPIONS_LEAGUE_ID = "4480"
+FORMULA_ONE_ID = "4370"
+MOTOGP_ID = "4407"
+TRACKED_CLUBS = [
+    ("Real Madrid", "Real Madrid"),
+    ("FC Barcelona", "Barcelona"),
+    ("Atletico Madrid", "Atletico de Madrid"),
 ]
 
 KEYWORD_WEIGHTS = {
@@ -108,6 +130,10 @@ def fetch_url(url: str) -> bytes:
     request = urllib.request.Request(url, headers={"User-Agent": "FrankfurtNewsBriefing/1.0"})
     with urllib.request.urlopen(request, timeout=30) as response:
         return response.read()
+
+
+def fetch_json(url: str) -> Any:
+    return json.loads(fetch_url(url).decode("utf-8"))
 
 
 def strip_html(value: str) -> str:
@@ -237,6 +263,123 @@ def fetch_weather() -> dict[str, Any]:
     }
 
 
+def parse_sports_datetime(event: dict[str, Any]) -> datetime | None:
+    raw_timestamp = event.get("strTimestamp")
+    if raw_timestamp:
+        normalized = raw_timestamp.replace(" ", "T").replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(normalized)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=ZoneInfo("UTC"))
+            return parsed.astimezone(TIMEZONE)
+        except ValueError:
+            pass
+    date_value = event.get("dateEvent")
+    time_value = (event.get("strTime") or "00:00:00").replace("Z", "")
+    if not date_value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(f"{date_value}T{time_value}")
+    except ValueError:
+        try:
+            parsed = datetime.fromisoformat(f"{date_value}T00:00:00")
+        except ValueError:
+            return None
+    return parsed.replace(tzinfo=TIMEZONE)
+
+
+def normalize_sports_event(event: dict[str, Any], label: str | None = None) -> dict[str, Any]:
+    start_time = parse_sports_datetime(event)
+    home = event.get("strHomeTeam") or ""
+    away = event.get("strAwayTeam") or ""
+    title = event.get("strEvent") or "Evento"
+    if home and away:
+        title = f"{home} vs {away}"
+    return {
+        "title": title,
+        "competition": label or event.get("strLeague") or event.get("strSport") or "Deporte",
+        "round": event.get("strRound") or event.get("strSeason") or "",
+        "venue": event.get("strVenue") or event.get("strCircuit") or "",
+        "start_time": start_time.isoformat() if start_time else None,
+        "status": event.get("strStatus") or "",
+    }
+
+
+def fetch_next_league_events(league_id: str, label: str, limit: int = 4) -> list[dict[str, Any]]:
+    payload = fetch_json(f"{SPORTSDB_BASE_URL}/eventsnextleague.php?id={league_id}")
+    events = payload.get("events") or []
+    normalized = [normalize_sports_event(event, label) for event in events]
+    normalized = [event for event in normalized if event["start_time"]]
+    normalized.sort(key=lambda item: item["start_time"])
+    return normalized[:limit]
+
+
+def fetch_team_next_matches(team_name: str, label: str, limit: int = 2) -> list[dict[str, Any]]:
+    team_payload = fetch_json(f"{SPORTSDB_BASE_URL}/searchteams.php?t={urllib.parse.quote_plus(team_name)}")
+    teams = team_payload.get("teams") or []
+    if not teams:
+        return []
+    team_id = teams[0].get("idTeam")
+    if not team_id:
+        return []
+    events_payload = fetch_json(f"{SPORTSDB_BASE_URL}/eventsnext.php?id={team_id}")
+    events = events_payload.get("events") or []
+    normalized = [normalize_sports_event(event, label) for event in events]
+    normalized = [event for event in normalized if event["start_time"]]
+    normalized.sort(key=lambda item: item["start_time"])
+    return normalized[:limit]
+
+
+def fetch_alcaraz_matches(days: int = 7, limit: int = 3) -> list[dict[str, Any]]:
+    matches: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for offset in range(days):
+        target_day = datetime.now(TIMEZONE).date() + timedelta(days=offset)
+        payload = fetch_json(f"{SPORTSDB_BASE_URL}/eventsday.php?d={target_day.isoformat()}&s=Tennis")
+        events = payload.get("events") or []
+        for event in events:
+            haystack = " ".join(filter(None, [event.get("strEvent"), event.get("strHomeTeam"), event.get("strAwayTeam")])).lower()
+            if "alcaraz" not in haystack:
+                continue
+            normalized = normalize_sports_event(event, "Tenis")
+            event_key = f"{normalized['title']}|{normalized['start_time']}"
+            if event_key in seen:
+                continue
+            seen.add(event_key)
+            matches.append(normalized)
+    matches.sort(key=lambda item: item["start_time"] or "")
+    return matches[:limit]
+
+
+def fetch_sports_agenda() -> dict[str, Any]:
+    agenda = {
+        "champions": [],
+        "formula1": [],
+        "motogp": [],
+        "alcaraz": [],
+        "clubs": {},
+        "errors": [],
+    }
+    loaders = [
+        ("champions", lambda: fetch_next_league_events(CHAMPIONS_LEAGUE_ID, "Champions League", 4)),
+        ("formula1", lambda: fetch_next_league_events(FORMULA_ONE_ID, "Formula 1", 3)),
+        ("motogp", lambda: fetch_next_league_events(MOTOGP_ID, "MotoGP", 3)),
+        ("alcaraz", lambda: fetch_alcaraz_matches()),
+    ]
+    for key, loader in loaders:
+        try:
+            agenda[key] = loader()
+        except Exception as exc:  # noqa: BLE001
+            agenda["errors"].append(f"{key}: {exc}")
+    for team_query, team_label in TRACKED_CLUBS:
+        try:
+            agenda["clubs"][team_label] = fetch_team_next_matches(team_query, team_label)
+        except Exception as exc:  # noqa: BLE001
+            agenda["clubs"][team_label] = []
+            agenda["errors"].append(f"{team_label}: {exc}")
+    return agenda
+
+
 def fetch_nearby_holidays() -> list[dict[str, Any]]:
     now = datetime.now(TIMEZONE)
     years = {now.year, (now + timedelta(days=HOLIDAY_LOOKAHEAD_DAYS)).year}
@@ -284,6 +427,11 @@ def build_payload() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         holidays = []
         errors.append(f"Holidays: {exc}")
+    try:
+        sports = fetch_sports_agenda()
+    except Exception as exc:  # noqa: BLE001
+        sports = {"champions": [], "formula1": [], "motogp": [], "alcaraz": [], "clubs": {}, "errors": [str(exc)]}
+        errors.append(f"Sports: {exc}")
     ordered_articles = sorted(all_articles, key=lambda item: (-item["score"], item["age_hours"]))
     return {
         "generated_at": datetime.now(TIMEZONE).isoformat(),
@@ -292,6 +440,7 @@ def build_payload() -> dict[str, Any]:
         "categories": categories,
         "weather": weather,
         "holidays": holidays,
+        "sports": sports,
         "errors": errors,
     }
 

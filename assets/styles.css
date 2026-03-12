@@ -172,6 +172,14 @@ a {
   margin-top: 22px;
 }
 
+.briefing-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.watchlist-grid {
+  grid-template-columns: 1fr;
+}
+
 .utility-grid {
   display: grid;
   grid-template-columns: 1.15fr 0.85fr;
@@ -187,6 +195,10 @@ a {
 .story-tags {
   margin: 0;
   padding-left: 18px;
+}
+
+.section-card li {
+  margin-bottom: 8px;
 }
 
 .digest-card li,

@@ -539,24 +539,89 @@ def build_weather_recommendation(weather: dict[str, Any]) -> str:
     return ", ".join(recommendations)
 
 
-def fallback_digest(weather: dict[str, Any], top_articles: list[Article], holidays: list[Holiday]) -> dict[str, Any]:
+def fallback_digest(
+    weather: dict[str, Any],
+    top_articles: list[Article],
+    holidays: list[Holiday],
+    categories: dict[str, list[Article]],
+    sports: dict[str, Any],
+) -> dict[str, Any]:
     combined = " ".join(f"{article.title} {article.description}".lower() for article in top_articles)
-    commute_plan = [message for term, message in COMMUTE_HINTS if term in combined][:2]
-    if not commute_plan:
-        commute_plan.append("No aparece una incidencia grave clara, pero conviene validar RMV/VGF antes de salir.")
-    commute_plan.append(f"Tiempo actual en la zona objetivo: {build_weather_recommendation(weather)}.")
-    watchlist = [article.title for article in top_articles[3:5]]
+    mobility = [message for term, message in COMMUTE_HINTS if term in combined][:2]
+    if not mobility:
+        mobility.append("No aparece una incidencia grave clara, pero conviene validar RMV/VGF antes de salir.")
+    mobility.append("Revisar cortes de carretera y tren si hay desplazamientos largos por la region.")
+
+    summary = [article.title for article in top_articles[:3]] or ["Sin titulares destacados en esta actualizacion."]
+    climate = [
+        f"Ahora: {weather['current']['temperature']:.0f}°C y {WEATHER_CODE_LABELS.get(weather['current']['weather_code'], 'condiciones variables').lower()}.",
+        f"Hoy: {weather['daily']['temp_min']:.0f}° / {weather['daily']['temp_max']:.0f}° con {weather['daily']['precipitation_probability_max']:.0f}% de lluvia maxima.",
+        f"Manana: {weather['tomorrow']['temp_min']:.0f}° / {weather['tomorrow']['temp_max']:.0f}°.",
+    ]
+    if weather["weekend"]:
+        weekend_labels = ", ".join(
+            f"{day['weekday']}: {day['temp_min']:.0f}°/{day['temp_max']:.0f}°"
+            for day in weather["weekend"][:2]
+        )
+        climate.append(f"Fin de semana: {weekend_labels}.")
+
+    holidays_section = [
+        f"{holiday.name}: {format_day_label(holiday.date)} ({holiday.countdown_label.lower()})."
+        for holiday in holidays[:3]
+    ] or ["No hay festivos cercanos en los proximos 45 dias."]
+
+    germany_items = []
+    for key in ("germany_economy", "germany_culture"):
+        germany_items.extend(article.title for article in categories.get(key, [])[:2])
+    if not germany_items:
+        germany_items = ["Sin titulares destacados de economia o cultura alemana en esta actualizacion."]
+
+    sports_items = []
+    for key in ("champions", "formula1", "motogp", "alcaraz"):
+        if sports.get(key):
+            sports_items.append(f"{sports[key][0]['competition']}: {sports[key][0]['title']} ({sports[key][0]['start_text']}).")
+    for club_name, club_events in sports.get("clubs", {}).items():
+        if club_events:
+            sports_items.append(f"{club_name}: {club_events[0]['title']} ({club_events[0]['start_text']}).")
+    if not sports_items:
+        sports_items = ["Sin agenda deportiva cercana detectada en esta actualizacion."]
+
+    watchlist = [article.title for article in top_articles[3:6]]
     if holidays:
         watchlist.append(f"Festivo cercano: {holidays[0].name} ({holidays[0].countdown_label.lower()}).")
+    if sports.get("errors"):
+        watchlist.append("La fuente deportiva ha fallado en esta ejecucion.")
+
     return {
         "headline": "Briefing local para Frankfurt con foco en movilidad y ciudad",
-        "takeaways": [article.title for article in top_articles[:3]] or ["Sin titulares destacados en esta actualización."],
-        "commute_plan": commute_plan[:3],
-        "watchlist": watchlist or ["Seguir movilidad, avisos y clima en la próxima actualización."],
+        "summary": summary,
+        "mobility_alerts": mobility[:3],
+        "climate": climate[:4],
+        "holidays": holidays_section,
+        "germany": germany_items[:4],
+        "sports": sports_items[:5],
+        "watchlist": watchlist or ["Seguir movilidad, avisos y clima en la proxima actualizacion."],
     }
 
 
-def build_llm_prompt(weather: dict[str, Any], articles: list[Article], holidays: list[Holiday]) -> str:
+def serialize_sports_event(event: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "title": event["title"],
+        "competition": event["competition"],
+        "round": event.get("round", ""),
+        "venue": event.get("venue", ""),
+        "start_time": event["start_time"].isoformat() if isinstance(event.get("start_time"), datetime) else event.get("start_time"),
+        "start_text": event.get("start_text", ""),
+    }
+
+
+def build_llm_prompt(
+    weather: dict[str, Any],
+    articles: list[Article],
+    holidays: list[Holiday],
+    categories: dict[str, list[Article]],
+    sports: dict[str, Any],
+) -> str:
     article_rows = []
     for article in articles[:12]:
         article_rows.append(
@@ -571,7 +636,7 @@ def build_llm_prompt(weather: dict[str, Any], articles: list[Article], holidays:
         )
     payload = {
         "persona": "Persona con desplazamientos diarios entre el noroeste y el este de Frankfurt.",
-        "objetivo": "Priorizar huelgas, transporte, alertas, clima, noticias de ciudad, fin de semana y festivos cercanos.",
+        "objetivo": "Priorizar huelgas, transporte, alertas, clima, noticias de ciudad, Alemania economia/cultura, fin de semana, festivos cercanos y deporte.",
         "ventana_noticias": "Solo articulos de las ultimas 24 horas.",
         "weather": {
             "hora_actual": weather["current"]["time"].isoformat(),
@@ -592,29 +657,56 @@ def build_llm_prompt(weather: dict[str, Any], articles: list[Article], holidays:
             }
             for holiday in holidays
         ],
+        "categorias_destacadas": {
+            key: [
+                {
+                    "titulo": article.title,
+                    "fuente": article.source,
+                    "impacto": article.impact_label,
+                }
+                for article in items[:3]
+            ]
+            for key, items in categories.items()
+        },
+        "deportes": {
+            "champions": [serialize_sports_event(event) for event in sports.get("champions", [])[:3]],
+            "formula1": [serialize_sports_event(event) for event in sports.get("formula1", [])[:2]],
+            "motogp": [serialize_sports_event(event) for event in sports.get("motogp", [])[:2]],
+            "alcaraz": [serialize_sports_event(event) for event in sports.get("alcaraz", [])[:2]],
+            "clubs": {
+                key: [serialize_sports_event(event) for event in items[:2]]
+                for key, items in sports.get("clubs", {}).items()
+            },
+        },
         "articulos": article_rows,
     }
     return (
-        'Devuelve solo JSON valido en espanol con las claves "headline", "takeaways", "commute_plan", "watchlist". '
+        'Devuelve solo JSON valido en espanol con las claves "headline", "summary", "mobility_alerts", "climate", "holidays", "germany", "sports", "watchlist". '
         "No incluyas markdown ni texto adicional. Usa frases cortas y operativas.\n\n"
         f"{json.dumps(payload, ensure_ascii=False)}"
     )
 
 
-def generate_llm_digest(weather: dict[str, Any], articles: list[Article], holidays: list[Holiday]) -> dict[str, Any]:
+def generate_llm_digest(
+    weather: dict[str, Any],
+    articles: list[Article],
+    holidays: list[Holiday],
+    categories: dict[str, list[Article]],
+    sports: dict[str, Any],
+) -> dict[str, Any]:
     endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
     api_key = os.getenv("AZURE_OPENAI_API_KEY", "")
     deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME") or os.getenv("AZURE_OPENAI_MODEL", "")
     api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
     if not endpoint or not api_key or not deployment:
-        return fallback_digest(weather, articles, holidays)
+        return fallback_digest(weather, articles, holidays, categories, sports)
     body = {
         "messages": [
             {"role": "system", "content": "Eres un analista local de Frankfurt extremadamente practico. Prioriza impacto real y accion inmediata."},
-            {"role": "user", "content": build_llm_prompt(weather, articles, holidays)},
+            {"role": "user", "content": build_llm_prompt(weather, articles, holidays, categories, sports)},
         ],
         "temperature": 0.2,
-        "max_tokens": 600,
+        "max_tokens": 900,
         "response_format": {"type": "json_object"},
     }
     url = f"{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
@@ -627,7 +719,7 @@ def generate_llm_digest(weather: dict[str, Any], articles: list[Article], holida
         content = json.loads(raw.decode("utf-8"))["choices"][0]["message"]["content"]
         return json.loads(content)
     except (urllib.error.URLError, KeyError, IndexError, json.JSONDecodeError, TimeoutError):
-        return fallback_digest(weather, articles, holidays)
+        return fallback_digest(weather, articles, holidays, categories, sports)
 
 
 def format_datetime(value: datetime) -> str:
@@ -739,6 +831,16 @@ def sports_column(title: str, items: list[dict[str, Any]], empty_label: str) -> 
     """
 
 
+def digest_section_card(title: str, items: list[str]) -> str:
+    rows = "".join(f"<li>{html.escape(item)}</li>" for item in items)
+    return f"""
+        <article class="digest-card section-card">
+          <p class="eyebrow">{html.escape(title)}</p>
+          <ul>{rows or '<li>Sin novedades relevantes.</li>'}</ul>
+        </article>
+    """
+
+
 def render_html(
     weather: dict[str, Any],
     digest: dict[str, Any],
@@ -783,8 +885,16 @@ def render_html(
             </section>
             """
         )
-    takeaways = "".join(f"<li>{html.escape(item)}</li>" for item in digest.get("takeaways", []))
-    commute_plan = "".join(f"<li>{html.escape(item)}</li>" for item in digest.get("commute_plan", []))
+    digest_cards = "".join(
+        [
+            digest_section_card("Resumen operativo", digest.get("summary", [])),
+            digest_section_card("Movilidad y alertas", digest.get("mobility_alerts", [])),
+            digest_section_card("Clima", digest.get("climate", [])),
+            digest_section_card("Festivos cercanos", digest.get("holidays", [])),
+            digest_section_card("Alemania", digest.get("germany", [])),
+            digest_section_card("Deportes", digest.get("sports", [])),
+        ]
+    )
     watchlist = "".join(f"<li>{html.escape(item)}</li>" for item in digest.get("watchlist", []))
     club_columns = "".join(
         sports_column(team_name, team_events, f"Sin partido cercano detectado para {team_name}.")
@@ -871,10 +981,14 @@ def render_html(
           </div>
         </article>
       </section>
-      <section class="digest-grid">
-        <article class="digest-card"><p class="eyebrow">Que importa hoy</p><ul>{takeaways}</ul></article>
-        <article class="digest-card"><p class="eyebrow">Plan de trayecto</p><ul>{commute_plan}</ul></article>
-        <article class="digest-card"><p class="eyebrow">Vigilar</p><ul>{watchlist}</ul></article>
+      <section class="digest-grid briefing-grid">
+        {digest_cards}
+      </section>
+      <section class="digest-grid watchlist-grid">
+        <article class="digest-card">
+          <p class="eyebrow">Vigilar</p>
+          <ul>{watchlist}</ul>
+        </article>
       </section>
       {sports_section}
       {''.join(category_sections)}
@@ -934,7 +1048,7 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         sports = {"champions": [], "formula1": [], "motogp": [], "alcaraz": [], "clubs": {}, "errors": [str(exc)]}
         errors.append(f"Sports: {exc}")
-    digest = generate_llm_digest(weather, sort_articles(deduplicate_articles(all_articles)), holidays)
+    digest = generate_llm_digest(weather, sort_articles(deduplicate_articles(all_articles)), holidays, categories, sports)
     if errors:
         digest["watchlist"] = list(digest.get("watchlist", [])) + [f"Error de captura: {item}" for item in errors[:2]]
     write_output(
