@@ -693,13 +693,16 @@ def generate_llm_digest(
     holidays: list[Holiday],
     categories: dict[str, list[Article]],
     sports: dict[str, Any],
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
     api_key = os.getenv("AZURE_OPENAI_API_KEY", "")
     deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME") or os.getenv("AZURE_OPENAI_MODEL", "")
     api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
     if not endpoint or not api_key or not deployment:
-        return fallback_digest(weather, articles, holidays, categories, sports)
+        return (
+            fallback_digest(weather, articles, holidays, categories, sports),
+            {"source": "fallback", "reason": "missing_azure_config"},
+        )
     body = {
         "messages": [
             {"role": "system", "content": "Eres un analista local de Frankfurt extremadamente practico. Prioriza impacto real y accion inmediata."},
@@ -717,9 +720,87 @@ def generate_llm_digest(
             data=json.dumps(body).encode("utf-8"),
         )
         content = json.loads(raw.decode("utf-8"))["choices"][0]["message"]["content"]
-        return json.loads(content)
-    except (urllib.error.URLError, KeyError, IndexError, json.JSONDecodeError, TimeoutError):
-        return fallback_digest(weather, articles, holidays, categories, sports)
+        return json.loads(content), {"source": "azure_llm", "reason": None}
+    except (urllib.error.URLError, KeyError, IndexError, json.JSONDecodeError, TimeoutError) as exc:
+        return (
+            fallback_digest(weather, articles, holidays, categories, sports),
+            {"source": "fallback", "reason": f"azure_error: {exc}"},
+        )
+
+
+def stringify_digest_item(item: Any) -> str:
+    if isinstance(item, str):
+        return item.strip()
+    if isinstance(item, (int, float, bool)):
+        return str(item)
+    if isinstance(item, dict):
+        preferred_keys = (
+            "text",
+            "title",
+            "headline",
+            "summary",
+            "label",
+            "name",
+            "value",
+            "content",
+            "descripcion",
+            "description",
+        )
+        parts = [str(item[key]).strip() for key in preferred_keys if item.get(key)]
+        if parts:
+            return " - ".join(parts[:2])
+        compact_parts = [f"{key}: {value}" for key, value in item.items() if value not in (None, "", [], {})]
+        return " - ".join(compact_parts[:2])
+    if isinstance(item, list):
+        parts = [stringify_digest_item(value) for value in item]
+        return " - ".join(part for part in parts if part)
+    return str(item).strip()
+
+
+def normalize_digest_section(value: Any, fallback: list[str]) -> list[str]:
+    if value in (None, "", [], {}):
+        return fallback
+    if not isinstance(value, list):
+        value = [value]
+    normalized = [stringify_digest_item(item) for item in value]
+    normalized = [item for item in normalized if item]
+    return normalized or fallback
+
+
+def normalize_digest_payload(digest: dict[str, Any]) -> dict[str, list[str] | str]:
+    headline = stringify_digest_item(digest.get("headline")) or "Briefing local para Frankfurt con foco en movilidad y ciudad"
+    normalized = {
+        "headline": headline,
+        "summary": normalize_digest_section(
+            digest.get("summary", digest.get("takeaways")),
+            ["Sin titulares destacados en esta actualizacion."],
+        ),
+        "mobility_alerts": normalize_digest_section(
+            digest.get("mobility_alerts", digest.get("commute_plan")),
+            ["Sin novedades claras de movilidad o alertas en esta actualizacion."],
+        ),
+        "climate": normalize_digest_section(
+            digest.get("climate"),
+            ["Sin resumen meteorologico disponible en esta actualizacion."],
+        ),
+        "holidays": normalize_digest_section(
+            digest.get("holidays"),
+            ["Sin festivos cercanos destacados."],
+        ),
+        "germany": normalize_digest_section(
+            digest.get("germany"),
+            ["Sin novedades destacadas de Alemania en esta actualizacion."],
+        ),
+        "sports": normalize_digest_section(
+            digest.get("sports"),
+            ["Sin agenda deportiva cercana detectada en esta actualizacion."],
+        ),
+        "watchlist": normalize_digest_section(
+            digest.get("watchlist"),
+            ["Seguir movilidad, avisos y clima en la proxima actualizacion."],
+        ),
+    }
+    return normalized
 
 
 def format_datetime(value: datetime) -> str:
@@ -832,7 +913,7 @@ def sports_column(title: str, items: list[dict[str, Any]], empty_label: str) -> 
 
 
 def digest_section_card(title: str, items: list[str]) -> str:
-    rows = "".join(f"<li>{html.escape(item)}</li>" for item in items)
+    rows = "".join(f"<li>{html.escape(stringify_digest_item(item))}</li>" for item in items)
     return f"""
         <article class="digest-card section-card">
           <p class="eyebrow">{html.escape(title)}</p>
@@ -849,6 +930,7 @@ def render_html(
     sports: dict[str, Any],
     generated_at: datetime,
 ) -> str:
+    digest = normalize_digest_payload(digest)
     weather_now = weather["current"]
     daily = weather["daily"]
     tomorrow = weather["tomorrow"]
@@ -1048,7 +1130,13 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         sports = {"champions": [], "formula1": [], "motogp": [], "alcaraz": [], "clubs": {}, "errors": [str(exc)]}
         errors.append(f"Sports: {exc}")
-    digest = generate_llm_digest(weather, sort_articles(deduplicate_articles(all_articles)), holidays, categories, sports)
+    digest, digest_meta = generate_llm_digest(
+        weather,
+        sort_articles(deduplicate_articles(all_articles)),
+        holidays,
+        categories,
+        sports,
+    )
     if errors:
         digest["watchlist"] = list(digest.get("watchlist", [])) + [f"Error de captura: {item}" for item in errors[:2]]
     write_output(
@@ -1065,6 +1153,8 @@ def main() -> int:
                 "alcaraz": len(sports.get("alcaraz", [])),
                 "clubs": {club: len(items) for club, items in sports.get("clubs", {}).items()},
             },
+            "digest_source": digest_meta["source"],
+            "digest_reason": digest_meta["reason"],
             "errors": errors,
         },
     )
