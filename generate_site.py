@@ -8,6 +8,7 @@ import shutil
 import urllib.error
 import urllib.parse
 import urllib.request
+import unicodedata
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -15,6 +16,11 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
+
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None
 
 ROOT = Path(__file__).resolve().parent
 ASSETS_DIR = ROOT / "assets"
@@ -72,15 +78,34 @@ CATEGORY_CONFIGS = [
     },
 ]
 
-SPORTSDB_BASE_URL = "https://www.thesportsdb.com/api/v1/json/3"
-CHAMPIONS_LEAGUE_ID = "4480"
-FORMULA_ONE_ID = "4370"
-MOTOGP_ID = "4407"
-TRACKED_CLUBS = [
-    ("Real Madrid", "Real Madrid"),
-    ("FC Barcelona", "Barcelona"),
-    ("Atletico Madrid", "Atletico de Madrid"),
-]
+SPORTS_LOOKAHEAD_DAYS = 14
+SPORTS_LOOKBACK_DAYS = 10
+ESPN_TIMEZONE = ZoneInfo("America/New_York")
+TEAM_SOURCES = {
+    "Real Madrid": {
+        "fixtures_url": "https://www.espn.com/soccer/team/fixtures/_/id/86/real-madrid",
+        "results_url": "https://www.espn.com/soccer/team/results/_/id/86/real-madrid",
+        "competition": "Real Madrid",
+        "source": "ESPN",
+    },
+    "Barcelona": {
+        "fixtures_url": "https://www.espn.com/soccer/team/fixtures/_/id/83/esp.1",
+        "results_url": "https://www.espn.com/soccer/team/results/_/id/83/esp.1",
+        "competition": "Barcelona",
+        "source": "ESPN",
+    },
+    "Atletico de Madrid": {
+        "fixtures_url": "https://www.espn.com/soccer/team/fixtures/_/id/1068/atletico-madrid",
+        "results_url": "https://www.espn.com/soccer/team/results/_/id/1068/atletico-madrid",
+        "competition": "Atletico de Madrid",
+        "source": "ESPN",
+    },
+}
+CHAMPIONS_SCHEDULE_URL = "https://www.espn.com/soccer/schedule/_/league/uefa.champions"
+F1_SCHEDULE_URL = "https://www.formula1.com/en/racing/2026"
+F1_RESULTS_URL = "https://www.formula1.com/en/results/2026/races"
+MOTOGP_CALENDAR_URL = "https://espndeportes.espn.com/motociclismo/nota/_/id/16389011/motogp-cuando-son-las-carreras-calendario-2026"
+ALCARAZ_RESULTS_URL = "https://www.espn.com/tennis/player/results/_/id/3782/carlos-alcaraz"
 
 KEYWORD_WEIGHTS = {
     "streik": 5,
@@ -368,132 +393,414 @@ def fetch_weather() -> dict[str, Any]:
     }
 
 
-def parse_sports_datetime(event: dict[str, Any]) -> datetime | None:
-    raw_timestamp = event.get("strTimestamp")
-    if raw_timestamp:
-        normalized = raw_timestamp.replace(" ", "T").replace("Z", "+00:00")
+def normalize_text(value: str | None) -> str:
+    if not value:
+        return ""
+    normalized = unicodedata.normalize("NFKD", value)
+    ascii_only = "".join(char for char in normalized if not unicodedata.combining(char))
+    return re.sub(r"\s+", " ", ascii_only).strip().lower()
+
+
+def fetch_soup(url: str) -> BeautifulSoup:
+    if BeautifulSoup is None:
+        raise RuntimeError("Falta beautifulsoup4. Instala el paquete para activar la agenda deportiva mejorada.")
+    return BeautifulSoup(fetch_url(url).decode("utf-8", errors="ignore"), "html.parser")
+
+
+def collapse_whitespace(value: str) -> str:
+    return re.sub(r"\s+", " ", value.replace("\xa0", " ")).strip()
+
+
+def infer_year(month: int, day: int, now: datetime | None = None) -> int:
+    now = now or datetime.now(TIMEZONE)
+    candidate = datetime(now.year, month, day, tzinfo=TIMEZONE)
+    if candidate.date() < (now.date() - timedelta(days=180)):
+        return now.year + 1
+    if candidate.date() > (now.date() + timedelta(days=180)):
+        return now.year - 1
+    return now.year
+
+
+def parse_month_day_label(value: str, with_time: str | None = None, timezone: ZoneInfo = TIMEZONE) -> datetime | None:
+    value = collapse_whitespace(value)
+    match = re.match(r"^[A-Za-z]{3},\s+([A-Za-z]{3})\s+(\d{1,2})$", value)
+    if not match:
+        return None
+    month = datetime.strptime(match.group(1), "%b").month
+    day = int(match.group(2))
+    year = infer_year(month, day)
+    if with_time and with_time not in {"TBD", "-"}:
+        time_text = collapse_whitespace(with_time)
         try:
-            parsed = datetime.fromisoformat(normalized)
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=ZoneInfo("UTC"))
-            return parsed.astimezone(TIMEZONE)
+            parsed = datetime.strptime(f"{match.group(1)} {day} {year} {time_text}", "%b %d %Y %I:%M %p")
+            return parsed.replace(tzinfo=timezone).astimezone(TIMEZONE)
         except ValueError:
             pass
+    return datetime(year, month, day, 12, 0, tzinfo=TIMEZONE)
 
-    date_value = event.get("dateEvent")
-    time_value = (event.get("strTime") or "00:00:00").replace("Z", "")
-    if not date_value:
-        return None
+
+def parse_full_date_label(value: str) -> datetime | None:
+    value = collapse_whitespace(value)
     try:
-        parsed = datetime.fromisoformat(f"{date_value}T{time_value}")
+        return datetime.strptime(value, "%A, %B %d, %Y").replace(tzinfo=TIMEZONE)
     except ValueError:
-        try:
-            parsed = datetime.fromisoformat(f"{date_value}T00:00:00")
-        except ValueError:
-            return None
-    return parsed.replace(tzinfo=TIMEZONE)
+        return None
 
 
-def normalize_sports_event(event: dict[str, Any], label: str | None = None) -> dict[str, Any]:
-    start_time = parse_sports_datetime(event)
-    home = event.get("strHomeTeam") or ""
-    away = event.get("strAwayTeam") or ""
-    title = event.get("strEvent") or "Evento"
-    if home and away:
-        title = f"{home} vs {away}"
+def parse_f1_date_range(value: str, year: int = 2026) -> datetime | None:
+    value = collapse_whitespace(value)
+    match = re.match(r"^(\d{1,2})\s*-\s*(\d{1,2})\s+([A-Z]{3})$", value)
+    if not match:
+        return None
+    day = int(match.group(2))
+    month = datetime.strptime(match.group(3).title(), "%b").month
+    return datetime(year, month, day, 12, 0, tzinfo=TIMEZONE)
+
+
+def parse_day_month_numeric(value: str, year: int = 2026) -> datetime | None:
+    value = collapse_whitespace(value)
+    match = re.match(r"^(\d{1,2})/(\d{1,2})$", value)
+    if not match:
+        return None
+    day = int(match.group(1))
+    month = int(match.group(2))
+    return datetime(year, month, day, 12, 0, tzinfo=TIMEZONE)
+
+
+def within_window(moment: datetime | None, *, lookback_days: int = SPORTS_LOOKBACK_DAYS, lookahead_days: int = SPORTS_LOOKAHEAD_DAYS) -> bool:
+    if moment is None:
+        return False
+    now = datetime.now(TIMEZONE)
+    return (now - timedelta(days=lookback_days)) <= moment <= (now + timedelta(days=lookahead_days))
+
+
+def build_upcoming_event(
+    title: str,
+    competition: str,
+    start_time: datetime | None,
+    source: str,
+    link: str,
+    *,
+    details: str = "",
+) -> dict[str, Any]:
     return {
         "title": title,
-        "competition": label or event.get("strLeague") or event.get("strSport") or "Deporte",
-        "round": event.get("strRound") or event.get("strSeason") or "",
-        "venue": event.get("strVenue") or event.get("strCircuit") or "",
-        "start_time": start_time,
-        "start_text": format_datetime(start_time) if start_time else "Hora pendiente",
-        "status": event.get("strStatus") or "",
+        "competition": competition,
+        "start_time": start_time.isoformat() if start_time else None,
+        "status": "Upcoming",
+        "details": details,
+        "source": source,
+        "link": link,
     }
 
 
-def fetch_next_league_events(league_id: str, label: str, limit: int = 4) -> list[dict[str, Any]]:
-    payload = fetch_json(f"{SPORTSDB_BASE_URL}/eventsnextleague.php?id={league_id}")
-    events = payload.get("events") or []
-    normalized = [normalize_sports_event(event, label) for event in events]
-    normalized = [event for event in normalized if event["start_time"]]
-    normalized.sort(key=lambda item: item["start_time"])
-    return normalized[:limit]
+def build_result_event(
+    title: str,
+    competition: str,
+    event_time: datetime | None,
+    source: str,
+    link: str,
+    *,
+    result: str = "",
+    details: str = "",
+) -> dict[str, Any]:
+    return {
+        "title": title,
+        "competition": competition,
+        "start_time": event_time.isoformat() if event_time else None,
+        "status": "Final",
+        "result": result,
+        "details": details,
+        "source": source,
+        "link": link,
+    }
 
 
-def fetch_team_next_matches(team_name: str, label: str, limit: int = 2) -> list[dict[str, Any]]:
-    team_payload = fetch_json(f"{SPORTSDB_BASE_URL}/searchteams.php?t={urllib.parse.quote_plus(team_name)}")
-    teams = team_payload.get("teams") or []
-    if not teams:
-        return []
-    team_id = teams[0].get("idTeam")
-    if not team_id:
-        return []
-    events_payload = fetch_json(f"{SPORTSDB_BASE_URL}/eventsnext.php?id={team_id}")
-    events = events_payload.get("events") or []
-    normalized = [normalize_sports_event(event) for event in events]
-    normalized = [event for event in normalized if event["start_time"]]
-    normalized.sort(key=lambda item: item["start_time"])
-    for event in normalized:
-        event["competition"] = label
-    return normalized[:limit]
+def clean_flag_prefix(value: str) -> str:
+    return re.sub(r"^Flag of [A-Za-z ]+\s+", "", collapse_whitespace(value))
 
 
-def fetch_alcaraz_matches(days: int = 7, limit: int = 3) -> list[dict[str, Any]]:
-    matches: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for offset in range(days):
-        target_day = datetime.now(TIMEZONE).date() + timedelta(days=offset)
-        payload = fetch_json(f"{SPORTSDB_BASE_URL}/eventsday.php?d={target_day.isoformat()}&s=Tennis")
-        events = payload.get("events") or []
-        for event in events:
-            haystack = " ".join(
-                filter(
-                    None,
-                    [
-                        event.get("strEvent"),
-                        event.get("strHomeTeam"),
-                        event.get("strAwayTeam"),
-                    ],
+def fetch_team_schedule_and_results(team_label: str) -> dict[str, Any]:
+    config = TEAM_SOURCES[team_label]
+    fixtures_soup = fetch_soup(config["fixtures_url"])
+    results_soup = fetch_soup(config["results_url"])
+    upcoming: list[dict[str, Any]] = []
+    recent_results: list[dict[str, Any]] = []
+    for table in fixtures_soup.find_all("table"):
+        for row in table.find_all("tr")[1:]:
+            cells = [collapse_whitespace(cell.get_text(" ", strip=True)) for cell in row.find_all(["th", "td"])]
+            if len(cells) < 6:
+                continue
+            event_time = parse_month_day_label(cells[0], cells[4], timezone=ESPN_TIMEZONE)
+            if event_time is None or event_time < datetime.now(TIMEZONE) or not within_window(event_time):
+                continue
+            upcoming.append(
+                build_upcoming_event(
+                    f"{cells[1]} vs {cells[3]}",
+                    cells[5],
+                    event_time,
+                    config["source"],
+                    config["fixtures_url"],
+                    details=f"Hora ESPN: {cells[4]}",
                 )
-            ).lower()
-            if "alcaraz" not in haystack:
+            )
+    for table in results_soup.find_all("table"):
+        for row in table.find_all("tr")[1:]:
+            cells = [collapse_whitespace(cell.get_text(" ", strip=True)) for cell in row.find_all(["th", "td"])]
+            if len(cells) < 6:
                 continue
-            normalized = normalize_sports_event(event, "Tenis")
-            event_key = f"{normalized['title']}|{normalized['start_text']}"
-            if event_key in seen:
+            event_time = parse_month_day_label(cells[0])
+            if event_time is None or event_time > datetime.now(TIMEZONE) or not within_window(event_time):
                 continue
-            seen.add(event_key)
-            matches.append(normalized)
-    matches.sort(key=lambda item: item["start_time"] or datetime.max.replace(tzinfo=TIMEZONE))
-    return matches[:limit]
+            recent_results.append(
+                build_result_event(
+                    f"{cells[1]} vs {cells[3]}",
+                    cells[5],
+                    event_time,
+                    config["source"],
+                    config["results_url"],
+                    result=cells[2],
+                    details=cells[4],
+                )
+            )
+    upcoming.sort(key=lambda item: item["start_time"] or "")
+    recent_results.sort(key=lambda item: item["start_time"] or "", reverse=True)
+    return {"upcoming": upcoming[:4], "recent_results": recent_results[:4], "source": config["source"]}
+
+
+def fetch_champions_schedule_and_results() -> dict[str, Any]:
+    soup = fetch_soup(CHAMPIONS_SCHEDULE_URL)
+    upcoming: list[dict[str, Any]] = []
+    recent_results: list[dict[str, Any]] = []
+    for block in soup.find_all("div", class_="ResponsiveTable"):
+        title_el = block.find("div", class_="Table__Title")
+        table = block.find("table")
+        if not title_el or not table:
+            continue
+        block_date = parse_full_date_label(title_el.get_text(" ", strip=True))
+        headers = [collapse_whitespace(th.get_text(" ", strip=True)).lower() for th in table.find_all("th")]
+        rows = table.find_all("tr")[1:]
+        target_list = upcoming if "time" in headers else recent_results
+        last_item: dict[str, Any] | None = None
+        for row in rows:
+            cells = [collapse_whitespace(cell.get_text(" ", strip=True)) for cell in row.find_all(["th", "td"])]
+            if not cells:
+                continue
+            if len(cells) == 1 and last_item is not None:
+                last_item["details"] = collapse_whitespace(" ".join(filter(None, [last_item.get("details", ""), cells[0]])))
+                continue
+            if "time" in headers and len(cells) >= 5:
+                away = re.sub(r"^v\s*", "", cells[1], flags=re.IGNORECASE)
+                event_time = None
+                if block_date is not None and cells[2] and cells[2] not in {"-", "TBD"}:
+                    try:
+                        local_time = datetime.strptime(cells[2], "%I:%M %p").time()
+                        event_time = datetime.combine(block_date.date(), local_time, tzinfo=ESPN_TIMEZONE).astimezone(TIMEZONE)
+                    except ValueError:
+                        event_time = block_date
+                if event_time is None or event_time < datetime.now(TIMEZONE) or not within_window(event_time):
+                    continue
+                last_item = build_upcoming_event(
+                    f"{cells[0]} vs {away}",
+                    "UEFA Champions League",
+                    event_time,
+                    "ESPN",
+                    CHAMPIONS_SCHEDULE_URL,
+                    details=cells[4],
+                )
+                target_list.append(last_item)
+            elif len(cells) >= 4:
+                score_match = re.search(r"(\d+\s*-\s*\d+)", cells[1])
+                if not score_match:
+                    continue
+                score = score_match.group(1)
+                away = cells[1].replace(score, "", 1).strip()
+                if block_date is None or block_date > datetime.now(TIMEZONE) or not within_window(block_date):
+                    continue
+                last_item = build_result_event(
+                    f"{cells[0]} vs {away}",
+                    "UEFA Champions League",
+                    block_date,
+                    "ESPN",
+                    CHAMPIONS_SCHEDULE_URL,
+                    result=score,
+                    details=f"{cells[2]} | {cells[3]}",
+                )
+                target_list.append(last_item)
+    upcoming.sort(key=lambda item: item["start_time"] or "")
+    recent_results.sort(key=lambda item: item["start_time"] or "", reverse=True)
+    return {"upcoming": upcoming[:4], "recent_results": recent_results[:4], "source": "ESPN"}
+
+
+def fetch_f1_schedule_and_results() -> dict[str, Any]:
+    schedule_soup = fetch_soup(F1_SCHEDULE_URL)
+    results_soup = fetch_soup(F1_RESULTS_URL)
+    upcoming: list[dict[str, Any]] = []
+    recent_results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for anchor in schedule_soup.find_all("a", href=re.compile(r"^/en/racing/2026/[a-z-]+$")):
+        href = anchor.get("href") or ""
+        if href in seen:
+            continue
+        seen.add(href)
+        texts = [collapse_whitespace(text) for text in anchor.stripped_strings]
+        if len(texts) < 3 or not texts[0].startswith("ROUND"):
+            continue
+        event_time = parse_f1_date_range(texts[2], year=2026)
+        if event_time is None or event_time < datetime.now(TIMEZONE) or not within_window(event_time):
+            continue
+        upcoming.append(
+            build_upcoming_event(
+                f"GP de {texts[1]}",
+                "Formula 1",
+                event_time,
+                "Formula1.com",
+                urllib.parse.urljoin(F1_SCHEDULE_URL, href),
+                details=texts[0],
+            )
+        )
+    table = results_soup.find("table")
+    if table:
+        for row in table.find_all("tr")[1:]:
+            cells = [clean_flag_prefix(cell.get_text(" ", strip=True)) for cell in row.find_all(["th", "td"])]
+            if len(cells) < 6:
+                continue
+            try:
+                event_time = datetime.strptime(f"{cells[1]} 2026", "%d %b %Y").replace(tzinfo=TIMEZONE)
+            except ValueError:
+                continue
+            if event_time > datetime.now(TIMEZONE) or not within_window(event_time):
+                continue
+            recent_results.append(
+                build_result_event(
+                    f"GP de {cells[0]}",
+                    "Formula 1",
+                    event_time,
+                    "Formula1.com",
+                    F1_RESULTS_URL,
+                    result=f"Ganador: {cells[2]}",
+                    details=f"{cells[3]} | {cells[5]}",
+                )
+            )
+    upcoming.sort(key=lambda item: item["start_time"] or "")
+    recent_results.sort(key=lambda item: item["start_time"] or "", reverse=True)
+    return {"upcoming": upcoming[:4], "recent_results": recent_results[:4], "source": "Formula1.com"}
+
+
+def fetch_motogp_schedule_and_results() -> dict[str, Any]:
+    soup = fetch_soup(MOTOGP_CALENDAR_URL)
+    table = soup.find("table")
+    upcoming: list[dict[str, Any]] = []
+    recent_results: list[dict[str, Any]] = []
+    if table:
+        for row in table.find_all("tr")[1:]:
+            cells = [collapse_whitespace(cell.get_text(" ", strip=True)) for cell in row.find_all(["th", "td"])]
+            if len(cells) < 3:
+                continue
+            event_time = parse_day_month_numeric(cells[0], year=2026)
+            if event_time is None or not within_window(event_time):
+                continue
+            title = f"GP de {cells[1]}"
+            if cells[2]:
+                if event_time <= datetime.now(TIMEZONE):
+                    recent_results.append(
+                        build_result_event(
+                            title,
+                            "MotoGP",
+                            event_time,
+                            "ESPN",
+                            MOTOGP_CALENDAR_URL,
+                            result=f"Ganador: {cells[2]}",
+                        )
+                    )
+            elif event_time >= datetime.now(TIMEZONE):
+                upcoming.append(build_upcoming_event(title, "MotoGP", event_time, "ESPN", MOTOGP_CALENDAR_URL))
+    upcoming.sort(key=lambda item: item["start_time"] or "")
+    recent_results.sort(key=lambda item: item["start_time"] or "", reverse=True)
+    return {"upcoming": upcoming[:4], "recent_results": recent_results[:4], "source": "ESPN"}
+
+
+def fetch_alcaraz_schedule_and_results() -> dict[str, Any]:
+    soup = fetch_soup(ALCARAZ_RESULTS_URL)
+    target_table = None
+    for table in soup.find_all("table"):
+        headers = [collapse_whitespace(th.get_text(" ", strip=True)).lower() for th in table.find_all("th")]
+        if headers[:4] == ["round", "opponent", "result", "score"]:
+            target_table = table
+            break
+    upcoming: list[dict[str, Any]] = []
+    recent_results: list[dict[str, Any]] = []
+    if target_table:
+        for row in target_table.find_all("tr")[1:]:
+            cells = [collapse_whitespace(cell.get_text(" ", strip=True)) for cell in row.find_all(["th", "td"])]
+            if len(cells) < 4 or cells[0] in {"Men's Singles", "Women's Singles"}:
+                continue
+            opponent = cells[1] or "Rival por confirmar"
+            title = f"Carlos Alcaraz vs {opponent}"
+            if cells[2] in {"W", "L"}:
+                recent_results.append(
+                    build_result_event(
+                        title,
+                        "Tenis",
+                        None,
+                        "ESPN",
+                        ALCARAZ_RESULTS_URL,
+                        result=f"{cells[2]} | {cells[3]}",
+                        details=cells[0],
+                    )
+                )
+            elif cells[2] == "-" and cells[3]:
+                event_time = None
+                try:
+                    event_time = datetime.strptime(cells[3], "%B %d %I:%M %p ET").replace(year=2026, tzinfo=ESPN_TIMEZONE).astimezone(TIMEZONE)
+                except ValueError:
+                    event_time = None
+                upcoming.append(
+                    build_upcoming_event(
+                        title,
+                        "Tenis",
+                        event_time,
+                        "ESPN",
+                        ALCARAZ_RESULTS_URL,
+                        details=cells[0],
+                    )
+                )
+    upcoming.sort(key=lambda item: item["start_time"] or "")
+    return {"upcoming": upcoming[:2], "recent_results": recent_results[:5], "source": "ESPN"}
+
+
+def empty_sports_bucket(source: str = "") -> dict[str, Any]:
+    return {"upcoming": [], "recent_results": [], "source": source}
+
+
+def empty_sports_agenda() -> dict[str, Any]:
+    return {
+        "champions": empty_sports_bucket("ESPN"),
+        "formula1": empty_sports_bucket("Formula1.com"),
+        "motogp": empty_sports_bucket("ESPN"),
+        "alcaraz": empty_sports_bucket("ESPN"),
+        "clubs": {team_label: empty_sports_bucket("ESPN") for team_label in TEAM_SOURCES},
+        "errors": [],
+    }
 
 
 def fetch_sports_agenda() -> dict[str, Any]:
-    agenda = {
-        "champions": [],
-        "formula1": [],
-        "motogp": [],
-        "alcaraz": [],
-        "clubs": {},
-        "errors": [],
-    }
+    agenda = empty_sports_agenda()
     loaders = [
-        ("champions", lambda: fetch_next_league_events(CHAMPIONS_LEAGUE_ID, "Champions League", 4)),
-        ("formula1", lambda: fetch_next_league_events(FORMULA_ONE_ID, "Formula 1", 3)),
-        ("motogp", lambda: fetch_next_league_events(MOTOGP_ID, "MotoGP", 3)),
-        ("alcaraz", lambda: fetch_alcaraz_matches()),
+        ("champions", fetch_champions_schedule_and_results),
+        ("formula1", fetch_f1_schedule_and_results),
+        ("motogp", fetch_motogp_schedule_and_results),
+        ("alcaraz", fetch_alcaraz_schedule_and_results),
     ]
     for key, loader in loaders:
         try:
             agenda[key] = loader()
         except Exception as exc:  # noqa: BLE001
             agenda["errors"].append(f"{key}: {exc}")
-    for team_query, team_label in TRACKED_CLUBS:
+    for team_label in TEAM_SOURCES:
         try:
-            agenda["clubs"][team_label] = fetch_team_next_matches(team_query, team_label)
+            agenda["clubs"][team_label] = fetch_team_schedule_and_results(team_label)
         except Exception as exc:  # noqa: BLE001
-            agenda["clubs"][team_label] = []
             agenda["errors"].append(f"{team_label}: {exc}")
     return agenda
 
@@ -541,6 +848,46 @@ def build_weather_recommendation(weather: dict[str, Any]) -> str:
     return ", ".join(recommendations)
 
 
+def sports_bucket_has_content(bucket: dict[str, Any] | None) -> bool:
+    if not isinstance(bucket, dict):
+        return False
+    return bool(bucket.get("upcoming") or bucket.get("recent_results"))
+
+
+def parse_event_start_time(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.astimezone(TIMEZONE)
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=TIMEZONE)
+    return parsed.astimezone(TIMEZONE)
+
+
+def sports_event_start_text(event: dict[str, Any]) -> str:
+    start_time = parse_event_start_time(event.get("start_time"))
+    return format_datetime(start_time) if start_time else "Hora pendiente"
+
+
+def summarize_sports_bucket(label: str, bucket: dict[str, Any]) -> str | None:
+    upcoming = bucket.get("upcoming") or []
+    recent_results = bucket.get("recent_results") or []
+    if upcoming:
+        event = upcoming[0]
+        return f"{label}: {event['title']} ({sports_event_start_text(event)})."
+    if recent_results:
+        event = recent_results[0]
+        result_text = f" ({event['result']})" if event.get("result") else ""
+        time_text = sports_event_start_text(event)
+        time_suffix = f" - {time_text}" if time_text != "Hora pendiente" else ""
+        return f"{label}: {event['title']}{result_text}{time_suffix}."
+    return None
+
+
 def fallback_digest(
     weather: dict[str, Any],
     top_articles: list[Article],
@@ -578,13 +925,21 @@ def fallback_digest(
     if not germany_items:
         germany_items = ["Sin titulares destacados de economia o cultura alemana en esta actualizacion."]
 
+    sports_labels = {
+        "champions": "Champions League",
+        "formula1": "Formula 1",
+        "motogp": "MotoGP",
+        "alcaraz": "Carlos Alcaraz",
+    }
     sports_items = []
-    for key in ("champions", "formula1", "motogp", "alcaraz"):
-        if sports.get(key):
-            sports_items.append(f"{sports[key][0]['competition']}: {sports[key][0]['title']} ({sports[key][0]['start_text']}).")
-    for club_name, club_events in sports.get("clubs", {}).items():
-        if club_events:
-            sports_items.append(f"{club_name}: {club_events[0]['title']} ({club_events[0]['start_text']}).")
+    for key, label in sports_labels.items():
+        summary_line = summarize_sports_bucket(label, sports.get(key, {}))
+        if summary_line:
+            sports_items.append(summary_line)
+    for club_name, club_bucket in sports.get("clubs", {}).items():
+        summary_line = summarize_sports_bucket(club_name, club_bucket)
+        if summary_line:
+            sports_items.append(summary_line)
     if not sports_items:
         sports_items = ["Sin agenda deportiva cercana detectada en esta actualizacion."]
 
@@ -610,10 +965,21 @@ def serialize_sports_event(event: dict[str, Any]) -> dict[str, Any]:
     return {
         "title": event["title"],
         "competition": event["competition"],
-        "round": event.get("round", ""),
-        "venue": event.get("venue", ""),
         "start_time": event["start_time"].isoformat() if isinstance(event.get("start_time"), datetime) else event.get("start_time"),
-        "start_text": event.get("start_text", ""),
+        "start_text": sports_event_start_text(event),
+        "status": event.get("status", ""),
+        "result": event.get("result", ""),
+        "details": event.get("details", ""),
+        "source": event.get("source", ""),
+        "link": event.get("link", ""),
+    }
+
+
+def serialize_sports_bucket(bucket: dict[str, Any], *, upcoming_limit: int, recent_limit: int) -> dict[str, Any]:
+    return {
+        "source": bucket.get("source", ""),
+        "upcoming": [serialize_sports_event(event) for event in (bucket.get("upcoming") or [])[:upcoming_limit]],
+        "recent_results": [serialize_sports_event(event) for event in (bucket.get("recent_results") or [])[:recent_limit]],
     }
 
 
@@ -672,13 +1038,13 @@ def build_llm_prompt(
             for key, items in categories.items()
         },
         "deportes": {
-            "champions": [serialize_sports_event(event) for event in sports.get("champions", [])[:3]],
-            "formula1": [serialize_sports_event(event) for event in sports.get("formula1", [])[:2]],
-            "motogp": [serialize_sports_event(event) for event in sports.get("motogp", [])[:2]],
-            "alcaraz": [serialize_sports_event(event) for event in sports.get("alcaraz", [])[:2]],
+            "champions": serialize_sports_bucket(sports.get("champions", {}), upcoming_limit=3, recent_limit=2),
+            "formula1": serialize_sports_bucket(sports.get("formula1", {}), upcoming_limit=2, recent_limit=2),
+            "motogp": serialize_sports_bucket(sports.get("motogp", {}), upcoming_limit=2, recent_limit=2),
+            "alcaraz": serialize_sports_bucket(sports.get("alcaraz", {}), upcoming_limit=2, recent_limit=3),
             "clubs": {
-                key: [serialize_sports_event(event) for event in items[:2]]
-                for key, items in sports.get("clubs", {}).items()
+                key: serialize_sports_bucket(bucket, upcoming_limit=2, recent_limit=2)
+                for key, bucket in sports.get("clubs", {}).items()
             },
         },
         "articulos": article_rows,
@@ -718,13 +1084,13 @@ def build_reduced_llm_prompt(
             for key, items in categories.items()
         },
         "sports": {
-            "champions": [event["title"] for event in sports.get("champions", [])[:2]],
-            "formula1": [event["title"] for event in sports.get("formula1", [])[:1]],
-            "motogp": [event["title"] for event in sports.get("motogp", [])[:1]],
-            "alcaraz": [event["title"] for event in sports.get("alcaraz", [])[:1]],
+            "champions": serialize_sports_bucket(sports.get("champions", {}), upcoming_limit=2, recent_limit=1),
+            "formula1": serialize_sports_bucket(sports.get("formula1", {}), upcoming_limit=1, recent_limit=1),
+            "motogp": serialize_sports_bucket(sports.get("motogp", {}), upcoming_limit=1, recent_limit=1),
+            "alcaraz": serialize_sports_bucket(sports.get("alcaraz", {}), upcoming_limit=1, recent_limit=2),
             "clubs": {
-                key: [event["title"] for event in items[:1]]
-                for key, items in sports.get("clubs", {}).items()
+                key: serialize_sports_bucket(bucket, upcoming_limit=1, recent_limit=1)
+                for key, bucket in sports.get("clubs", {}).items()
             },
         },
     }
@@ -1072,29 +1438,43 @@ def holiday_card(holiday: Holiday) -> str:
 
 
 def sports_event_item(event: dict[str, Any]) -> str:
-    meta_parts = [event["competition"]]
-    if event.get("round"):
-        meta_parts.append(str(event["round"]))
-    if event.get("venue"):
-        meta_parts.append(event["venue"])
-    meta = " · ".join(part for part in meta_parts if part)
+    meta_parts = [event.get("competition", ""), event.get("status", ""), event.get("source", "")]
+    meta = " | ".join(part for part in meta_parts if part)
+    detail_parts = [event.get("result", ""), event.get("details", "")]
+    detail_text = " | ".join(part for part in detail_parts if part)
+    title = html.escape(event["title"])
+    if event.get("link"):
+        title = f'<a href="{html.escape(event["link"])}" target="_blank" rel="noreferrer">{title}</a>'
     return f"""
         <article class="sports-item">
-          <h3>{html.escape(event['title'])}</h3>
-          <p>{html.escape(event['start_text'])}</p>
-          <span>{html.escape(meta)}</span>
+          <h3>{title}</h3>
+          <p>{html.escape(sports_event_start_text(event))}</p>
+          <span class="sports-meta">{html.escape(meta)}</span>
+          {'<span class="sports-detail">' + html.escape(detail_text) + '</span>' if detail_text else ''}
         </article>
     """
 
 
-def sports_column(title: str, items: list[dict[str, Any]], empty_label: str) -> str:
+def sports_event_group(title: str, items: list[dict[str, Any]], empty_label: str) -> str:
     cards = "".join(sports_event_item(item) for item in items)
     return f"""
-        <section class="sports-column">
-          <p class="eyebrow">{html.escape(title)}</p>
+        <div class="sports-group">
+          <h3 class="sports-subheading">{html.escape(title)}</h3>
           <div class="sports-list">
             {cards or f'<p class="empty-state">{html.escape(empty_label)}</p>'}
           </div>
+        </div>
+    """
+
+
+def sports_column(title: str, bucket: dict[str, Any], empty_upcoming: str, empty_results: str) -> str:
+    source = bucket.get("source", "")
+    return f"""
+        <section class="sports-column">
+          <p class="eyebrow">{html.escape(title)}</p>
+          {'<p class="sports-source">Fuente principal: ' + html.escape(source) + '</p>' if source else ''}
+          {sports_event_group('Proximos eventos', bucket.get('upcoming', []), empty_upcoming)}
+          {sports_event_group('Resultados recientes', bucket.get('recent_results', []), empty_results)}
         </section>
     """
 
@@ -1191,8 +1571,13 @@ def render_html(
     ai_report_html = ai_report_card(digest.get("ai_report", []), digest_meta)
     watchlist = "".join(f"<li>{html.escape(item)}</li>" for item in digest.get("watchlist", []))
     club_columns = "".join(
-        sports_column(team_name, team_events, f"Sin partido cercano detectado para {team_name}.")
-        for team_name, team_events in sports.get("clubs", {}).items()
+        sports_column(
+            team_name,
+            team_bucket,
+            f"Sin partido cercano detectado para {team_name}.",
+            f"Sin resultado reciente detectado para {team_name}.",
+        )
+        for team_name, team_bucket in sports.get("clubs", {}).items()
     )
     sports_section = f"""
       <section class="content-block">
@@ -1203,10 +1588,10 @@ def render_html(
           </div>
         </div>
         <div class="sports-grid">
-          {sports_column('Champions League', sports.get('champions', []), 'No hay partidos cercanos detectados de Champions League.')}
-          {sports_column('Formula 1', sports.get('formula1', []), 'No hay gran premio cercano detectado.')}
-          {sports_column('MotoGP', sports.get('motogp', []), 'No hay carrera cercana detectada de MotoGP.')}
-          {sports_column('Carlos Alcaraz', sports.get('alcaraz', []), 'No se ha detectado partido cercano de Alcaraz.')}
+          {sports_column('Champions League', sports.get('champions', {}), 'No hay partidos cercanos detectados de Champions League.', 'No hay resultados recientes detectados de Champions League.')}
+          {sports_column('Formula 1', sports.get('formula1', {}), 'No hay gran premio cercano detectado.', 'No hay resultados recientes detectados de Formula 1.')}
+          {sports_column('MotoGP', sports.get('motogp', {}), 'No hay carrera cercana detectada de MotoGP.', 'No hay resultados recientes detectados de MotoGP.')}
+          {sports_column('Carlos Alcaraz', sports.get('alcaraz', {}), 'No se ha detectado partido cercano de Alcaraz.', 'No se ha detectado resultado reciente de Alcaraz.')}
         </div>
         <div class="sports-grid club-grid">
           {club_columns}
@@ -1289,7 +1674,7 @@ def render_html(
       {sports_section}
       {''.join(category_sections)}
       <footer class="site-footer">
-        <p>Fuentes: Google News RSS, Open-Meteo, Nager.Date y TheSportsDB. El resumen usa Azure OpenAI si hay secretos configurados; si no, aplica reglas locales.</p>
+        <p>Fuentes: Google News RSS, Open-Meteo, Nager.Date, ESPN y Formula1.com. El resumen usa Azure OpenAI si hay secretos configurados; si no, aplica reglas locales.</p>
       </footer>
     </main>
   </body>
@@ -1342,7 +1727,8 @@ def main() -> int:
     try:
         sports = fetch_sports_agenda()
     except Exception as exc:  # noqa: BLE001
-        sports = {"champions": [], "formula1": [], "motogp": [], "alcaraz": [], "clubs": {}, "errors": [str(exc)]}
+        sports = empty_sports_agenda()
+        sports["errors"] = [str(exc)]
         errors.append(f"Sports: {exc}")
     digest, digest_meta = generate_llm_digest(
         weather,
@@ -1362,11 +1748,29 @@ def main() -> int:
             "news_window_hours": NEWS_WINDOW_HOURS,
             "holidays_found": len(holidays),
             "sports_loaded": {
-                "champions": len(sports.get("champions", [])),
-                "formula1": len(sports.get("formula1", [])),
-                "motogp": len(sports.get("motogp", [])),
-                "alcaraz": len(sports.get("alcaraz", [])),
-                "clubs": {club: len(items) for club, items in sports.get("clubs", {}).items()},
+                "champions": {
+                    "upcoming": len((sports.get("champions", {}) or {}).get("upcoming", [])),
+                    "recent_results": len((sports.get("champions", {}) or {}).get("recent_results", [])),
+                },
+                "formula1": {
+                    "upcoming": len((sports.get("formula1", {}) or {}).get("upcoming", [])),
+                    "recent_results": len((sports.get("formula1", {}) or {}).get("recent_results", [])),
+                },
+                "motogp": {
+                    "upcoming": len((sports.get("motogp", {}) or {}).get("upcoming", [])),
+                    "recent_results": len((sports.get("motogp", {}) or {}).get("recent_results", [])),
+                },
+                "alcaraz": {
+                    "upcoming": len((sports.get("alcaraz", {}) or {}).get("upcoming", [])),
+                    "recent_results": len((sports.get("alcaraz", {}) or {}).get("recent_results", [])),
+                },
+                "clubs": {
+                    club: {
+                        "upcoming": len((bucket or {}).get("upcoming", [])),
+                        "recent_results": len((bucket or {}).get("recent_results", [])),
+                    }
+                    for club, bucket in sports.get("clubs", {}).items()
+                },
             },
             "digest_source": digest_meta["source"],
             "digest_reason": digest_meta["reason"],
