@@ -681,7 +681,8 @@ def build_llm_prompt(
         "articulos": article_rows,
     }
     return (
-        'Devuelve solo JSON valido en espanol con las claves "headline", "summary", "mobility_alerts", "climate", "holidays", "germany", "sports", "watchlist". '
+        'Devuelve solo JSON valido en espanol con las claves "headline", "ai_report", "summary", "mobility_alerts", "climate", "holidays", "germany", "sports", "watchlist". '
+        'En "ai_report" devuelve de 5 a 8 puntos mas desarrollados, cada uno empezando por el nombre de la seccion y dos puntos. '
         "No incluyas markdown ni texto adicional. Usa frases cortas y operativas.\n\n"
         f"{json.dumps(payload, ensure_ascii=False)}"
     )
@@ -771,6 +772,10 @@ def normalize_digest_payload(digest: dict[str, Any]) -> dict[str, list[str] | st
     headline = stringify_digest_item(digest.get("headline")) or "Briefing local para Frankfurt con foco en movilidad y ciudad"
     normalized = {
         "headline": headline,
+        "ai_report": normalize_digest_section(
+            digest.get("ai_report"),
+            [],
+        ),
         "summary": normalize_digest_section(
             digest.get("summary", digest.get("takeaways")),
             ["Sin titulares destacados en esta actualizacion."],
@@ -922,6 +927,26 @@ def digest_section_card(title: str, items: list[str]) -> str:
     """
 
 
+def ai_report_card(items: list[str], digest_meta: dict[str, Any]) -> str:
+    if digest_meta.get("source") == "azure_llm" and items:
+        rows = "".join(f"<li>{html.escape(stringify_digest_item(item))}</li>" for item in items)
+        body = f"<ul>{rows}</ul>"
+    else:
+        reason = stringify_digest_item(digest_meta.get("reason")) or "No hubo conexion con Azure OpenAI."
+        body = f'<p class="ai-report-error">No hubo conexion con Azure OpenAI.</p><p class="ai-report-detail">{html.escape(reason)}</p>'
+    return f"""
+        <section class="content-block ai-report-card">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Informe generado por IA</p>
+              <h2>Resumen detallado agrupado</h2>
+            </div>
+          </div>
+          {body}
+        </section>
+    """
+
+
 def render_html(
     weather: dict[str, Any],
     digest: dict[str, Any],
@@ -981,6 +1006,7 @@ def render_html(
             digest_section_card("Deportes", digest.get("sports", [])),
         ]
     )
+    ai_report_html = ai_report_card(digest.get("ai_report", []), digest_meta)
     watchlist = "".join(f"<li>{html.escape(item)}</li>" for item in digest.get("watchlist", []))
     club_columns = "".join(
         sports_column(team_name, team_events, f"Sin partido cercano detectado para {team_name}.")
@@ -1042,6 +1068,7 @@ def render_html(
           <div class="hour-strip">{''.join(hourly_cards)}</div>
         </div>
       </section>
+      {ai_report_html}
       <section class="utility-grid">
         <article class="content-block compact-block">
           <div class="section-heading">
