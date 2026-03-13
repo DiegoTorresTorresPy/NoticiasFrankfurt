@@ -682,8 +682,9 @@ def build_llm_prompt(
     }
     return (
         'Devuelve solo JSON valido en espanol con las claves "headline", "ai_report", "summary", "mobility_alerts", "climate", "holidays", "germany", "sports", "watchlist". '
-        'En "ai_report" devuelve de 5 a 8 puntos mas desarrollados, cada uno empezando por el nombre de la seccion y dos puntos. '
-        "No incluyas markdown ni texto adicional. Usa frases cortas y operativas.\n\n"
+        'En "ai_report" devuelve exactamente 5 parrafos relativamente largos y claros, en este orden: 1) clima y forecast, 2) movilidad y alertas, 3) Alemania economia/cultura, 4) deportes, 5) festivos cercanos. '
+        'Cada parrafo debe empezar por el nombre de la seccion y dos puntos. Cada parrafo debe comentar lo principal de las tarjetas relacionadas y sonar como un briefing continuo, no como titulares sueltos. '
+        "No incluyas markdown ni texto adicional. Usa frases claras, con algo mas de desarrollo que el resto del JSON.\n\n"
         f"{json.dumps(payload, ensure_ascii=False)}"
     )
 
@@ -929,8 +930,8 @@ def digest_section_card(title: str, items: list[str]) -> str:
 
 def ai_report_card(items: list[str], digest_meta: dict[str, Any]) -> str:
     if digest_meta.get("source") == "azure_llm" and items:
-        rows = "".join(f"<li>{html.escape(stringify_digest_item(item))}</li>" for item in items)
-        body = f"<ul>{rows}</ul>"
+        paragraphs = "".join(f"<p>{html.escape(stringify_digest_item(item))}</p>" for item in items)
+        body = f'<div class="ai-report-body">{paragraphs}</div>'
     else:
         reason = stringify_digest_item(digest_meta.get("reason")) or "No hubo conexion con Azure OpenAI."
         body = f'<p class="ai-report-error">No hubo conexion con Azure OpenAI.</p><p class="ai-report-detail">{html.escape(reason)}</p>'
