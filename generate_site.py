@@ -625,7 +625,7 @@ def build_llm_prompt(
     sports: dict[str, Any],
 ) -> str:
     article_rows = []
-    for article in articles[:12]:
+    for article in articles[:8]:
         article_rows.append(
             {
                 "titulo": article.title,
@@ -634,7 +634,7 @@ def build_llm_prompt(
                 "categoria": article.category_label,
                 "impacto": article.impact_label,
                 "hora": article.published_at.astimezone(TIMEZONE).isoformat() if article.published_at else None,
-                "descripcion": article.description[:240],
+                "descripcion": article.description[:160],
             }
         )
     payload = {
@@ -667,7 +667,7 @@ def build_llm_prompt(
                     "fuente": article.source,
                     "impacto": article.impact_label,
                 }
-                for article in items[:3]
+                for article in items[:2]
             ]
             for key, items in categories.items()
         },
@@ -693,6 +693,66 @@ def build_llm_prompt(
     )
 
 
+def azure_chat_completion(
+    endpoint: str,
+    api_key: str,
+    deployment: str,
+    api_version: str,
+    messages: list[dict[str, str]],
+    max_tokens: int,
+) -> dict[str, Any]:
+    body = {
+        "messages": messages,
+        "temperature": 0.2,
+        "max_tokens": max_tokens,
+        "response_format": {"type": "json_object"},
+    }
+    url = f"{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
+    raw = fetch_url(
+        url,
+        headers={"Content-Type": "application/json", "api-key": api_key},
+        data=json.dumps(body).encode("utf-8"),
+    )
+    return json.loads(raw.decode("utf-8"))
+
+
+def parse_or_repair_llm_json(
+    content: str,
+    endpoint: str,
+    api_key: str,
+    deployment: str,
+    api_version: str,
+) -> dict[str, Any]:
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        repair_messages = [
+            {
+                "role": "system",
+                "content": "Repara JSON roto. Devuelve solo JSON valido sin markdown ni explicaciones.",
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Convierte este contenido en JSON valido preservando la intencion original. "
+                    "Si falta cerrar cadenas u objetos, completalos de forma conservadora. "
+                    "Devuelve solo JSON valido.\n\n"
+                    f"{content}"
+                ),
+            },
+        ]
+        repaired_payload = azure_chat_completion(
+            endpoint,
+            api_key,
+            deployment,
+            api_version,
+            repair_messages,
+            1800,
+        )
+        repaired_content = repaired_payload["choices"][0]["message"]["content"]
+        return json.loads(repaired_content)
+
+
 def generate_llm_digest(
     weather: dict[str, Any],
     articles: list[Article],
@@ -709,24 +769,24 @@ def generate_llm_digest(
             fallback_digest(weather, articles, holidays, categories, sports),
             {"source": "fallback", "reason": "missing_azure_config"},
         )
-    body = {
-        "messages": [
-            {"role": "system", "content": "Eres un analista local de Frankfurt extremadamente practico. Prioriza impacto real y accion inmediata."},
-            {"role": "user", "content": build_llm_prompt(weather, articles, holidays, categories, sports)},
-        ],
-        "temperature": 0.2,
-        "max_tokens": 900,
-        "response_format": {"type": "json_object"},
-    }
-    url = f"{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
+    messages = [
+        {"role": "system", "content": "Eres un analista local de Frankfurt extremadamente practico. Prioriza impacto real y accion inmediata."},
+        {"role": "user", "content": build_llm_prompt(weather, articles, holidays, categories, sports)},
+    ]
     try:
-        raw = fetch_url(
-            url,
-            headers={"Content-Type": "application/json", "api-key": api_key},
-            data=json.dumps(body).encode("utf-8"),
+        payload = azure_chat_completion(
+            endpoint,
+            api_key,
+            deployment,
+            api_version,
+            messages,
+            1600,
         )
-        content = json.loads(raw.decode("utf-8"))["choices"][0]["message"]["content"]
-        return json.loads(content), {"source": "azure_llm", "reason": None}
+        choice = payload["choices"][0]
+        content = choice["message"]["content"]
+        digest = parse_or_repair_llm_json(content, endpoint, api_key, deployment, api_version)
+        finish_reason = choice.get("finish_reason")
+        return digest, {"source": "azure_llm", "reason": None if finish_reason != "length" else "azure_length_truncated_but_repaired"}
     except (urllib.error.URLError, KeyError, IndexError, json.JSONDecodeError, TimeoutError) as exc:
         return (
             fallback_digest(weather, articles, holidays, categories, sports),
