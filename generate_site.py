@@ -1394,98 +1394,160 @@ def apply_article_translations(categories: dict[str, list[Article]], digest: dic
                 article.translated_description = translated_description
 
 
+def priority_dot_class(label: str) -> str:
+    return {"Alta": "p-high", "Media": "p-mid"}.get(label, "p-low")
+
+
+def digest_tag_class(value: str) -> str:
+    normalized = normalize_text(value)
+    if normalized in {"streik", "warnung", "sperrung", "unwetter", "u7", "huelga"}:
+        return "tag-red"
+    if normalized in {"rmv", "vgf", "frankfurt", "a3", "verkehr", "movilidad"}:
+        return "tag-blue"
+    if normalized in {"polizei", "feuerwehr", "baustelle", "finanzas", "festivo"}:
+        return "tag-yellow"
+    return "tag-green"
+
+
+def render_tags(values: list[str], limit: int = 3) -> str:
+    tags = []
+    for raw_value in values[:limit]:
+        value = stringify_digest_item(raw_value)
+        if not value:
+            continue
+        tags.append(f'<span class="tag {digest_tag_class(value)}">{html.escape(value)}</span>')
+    return "".join(tags)
+
+
+def format_header_date(value: datetime) -> str:
+    months = {
+        1: "ENE",
+        2: "FEB",
+        3: "MAR",
+        4: "ABR",
+        5: "MAY",
+        6: "JUN",
+        7: "JUL",
+        8: "AGO",
+        9: "SEP",
+        10: "OCT",
+        11: "NOV",
+        12: "DIC",
+    }
+    local = value.astimezone(TIMEZONE)
+    return f"{local.day:02d} {months[local.month]} {local.year}"
+
+
+def format_time_short(value: datetime) -> str:
+    local = value.astimezone(TIMEZONE)
+    return f"{local:%H:%M} h"
+
+
 def article_card(article: Article) -> str:
-    tags = "".join(f"<li>{html.escape(term)}</li>" for term in article.matched_terms[:3])
     visible_title = article.translated_title or article.title
     raw_description = article.translated_description or article.description
-    description = raw_description[:220] + ("..." if len(raw_description) > 220 else "")
+    description = raw_description[:190] + ("..." if len(raw_description) > 190 else "")
+    tags = render_tags(article.matched_terms)
     return f"""
-        <article class="story-card">
-          <div class="story-meta">
-            <span class="impact-pill {impact_class(article.impact_label)}">{html.escape(article.impact_label)} prioridad</span>
-            <span>{html.escape(article.source)}</span>
-            <span>{html.escape(article.age_text)}</span>
-          </div>
-          <h3><a href="{html.escape(article.link)}" target="_blank" rel="noreferrer">{html.escape(visible_title)}</a></h3>
-          <p>{html.escape(description)}</p>
-          <ul class="story-tags">{tags}</ul>
-        </article>
+      <a class="news-item" href="{html.escape(article.link)}" target="_blank" rel="noreferrer">
+        <div class="priority-dot {priority_dot_class(article.impact_label)}"></div>
+        <div>
+          <div class="news-source">{html.escape(article.source)}</div>
+          <div class="news-title">{html.escape(visible_title)}</div>
+          <div class="news-summary">{html.escape(description)}</div>
+          {f'<div>{tags}</div>' if tags else ''}
+        </div>
+        <div class="news-time">{html.escape(article.age_text)}</div>
+      </a>
     """
 
 
 def forecast_card(title: str, day: dict[str, Any]) -> str:
+    rain_probability = int(day["precipitation_probability_max"])
+    rain_class = " danger" if rain_probability >= 60 else ""
+    today_class = " today" if normalize_text(title) == "hoy" else ""
+    rain_label = "Lluvia" if rain_probability >= 40 else "Seco"
     return f"""
-        <article class="forecast-card">
-          <p class="eyebrow">{html.escape(title)}</p>
-          <h3>{html.escape(format_day_label(day['date']))}</h3>
-          <strong>{day['temp_min']:.0f}° / {day['temp_max']:.0f}°</strong>
-          <p>{html.escape(WEATHER_CODE_LABELS.get(day['weather_code'], 'Variable'))}</p>
-          <span>{day['precipitation_probability_max']:.0f}% lluvia</span>
-        </article>
+      <article class="day-card{today_class}">
+        <div class="day-name">{html.escape(title)} · {html.escape(format_day_label(day['date']))}</div>
+        <div class="day-range">{day['temp_max']:.0f}° <span class="low">/ {day['temp_min']:.0f}°</span></div>
+        <div class="day-cond">{html.escape(WEATHER_CODE_LABELS.get(day['weather_code'], 'Variable'))}</div>
+        <div class="day-rain">{rain_label} · {rain_probability}% lluvia<div class="rain-bar"><div class="rain-fill{rain_class}" style="width:{max(0, min(rain_probability, 100))}%"></div></div></div>
+      </article>
     """
 
 
 def holiday_card(holiday: Holiday) -> str:
-    scope = "Solo Hesse" if holiday.is_regional else "Nacional"
+    local = holiday.date.astimezone(TIMEZONE)
+    delta_days = max(0, (local.date() - datetime.now(TIMEZONE).date()).days)
+    badge_value = "HOY" if delta_days == 0 else str(delta_days)
+    badge_suffix = "ACTIVO" if delta_days == 0 else "DIAS"
+    scope = "Hesse" if holiday.is_regional else "Nacional"
     return f"""
-        <article class="holiday-card">
-          <span class="impact-pill impact-low">{html.escape(holiday.countdown_label)}</span>
-          <h3>{html.escape(holiday.name)}</h3>
-          <p>{html.escape(format_day_label(holiday.date))}</p>
-          <span>{html.escape(scope)}</span>
-        </article>
+      <article class="holiday-card">
+        <div class="days-badge">{html.escape(badge_value)}<small>{html.escape(badge_suffix)}</small></div>
+        <div>
+          <div class="holiday-name">{html.escape(holiday.name)}</div>
+          <div class="holiday-date">{html.escape(format_day_label(holiday.date))}</div>
+          <span class="tag tag-yellow">{html.escape(scope)}</span>
+        </div>
+      </article>
     """
 
 
 def sports_event_item(event: dict[str, Any]) -> str:
-    meta_parts = [event.get("competition", ""), event.get("status", ""), event.get("source", "")]
-    meta = " | ".join(part for part in meta_parts if part)
+    source = event.get("source") or event.get("competition") or "Agenda"
     detail_parts = [event.get("result", ""), event.get("details", "")]
-    detail_text = " | ".join(part for part in detail_parts if part)
-    title = html.escape(event["title"])
-    if event.get("link"):
-        title = f'<a href="{html.escape(event["link"])}" target="_blank" rel="noreferrer">{title}</a>'
+    detail_text = " · ".join(part for part in detail_parts if part)
+    href = html.escape(event.get("link") or "#")
+    dot_class = "p-high" if event.get("status") == "Upcoming" else "p-low"
     return f"""
-        <article class="sports-item">
-          <h3>{title}</h3>
-          <p>{html.escape(sports_event_start_text(event))}</p>
-          <span class="sports-meta">{html.escape(meta)}</span>
-          {'<span class="sports-detail">' + html.escape(detail_text) + '</span>' if detail_text else ''}
-        </article>
+      <a class="news-item sports-news-item" href="{href}" target="_blank" rel="noreferrer">
+        <div class="priority-dot {dot_class}"></div>
+        <div>
+          <div class="news-source">{html.escape(source)}</div>
+          <div class="news-title">{html.escape(event['title'])}</div>
+          <div class="news-summary">{html.escape(sports_event_start_text(event))}</div>
+          {f'<div class="news-summary">{html.escape(detail_text)}</div>' if detail_text else ''}
+        </div>
+        <div class="news-time">{html.escape(event.get('status') or '')}</div>
+      </a>
     """
 
 
 def sports_event_group(title: str, items: list[dict[str, Any]], empty_label: str) -> str:
     cards = "".join(sports_event_item(item) for item in items)
     return f"""
-        <div class="sports-group">
-          <h3 class="sports-subheading">{html.escape(title)}</h3>
-          <div class="sports-list">
-            {cards or f'<p class="empty-state">{html.escape(empty_label)}</p>'}
-          </div>
+      <div class="sports-group">
+        <h3 class="sports-subheading">{html.escape(title)}</h3>
+        <div class="news-grid compact-news-grid">
+          {cards or f'<div class="empty-panel">{html.escape(empty_label)}</div>'}
         </div>
+      </div>
     """
 
 
 def sports_column(title: str, bucket: dict[str, Any], empty_upcoming: str, empty_results: str) -> str:
     source = bucket.get("source", "")
     return f"""
-        <section class="sports-column">
-          <p class="eyebrow">{html.escape(title)}</p>
-          {'<p class="sports-source">Fuente principal: ' + html.escape(source) + '</p>' if source else ''}
-          {sports_event_group('Proximos eventos', bucket.get('upcoming', []), empty_upcoming)}
-          {sports_event_group('Resultados recientes', bucket.get('recent_results', []), empty_results)}
-        </section>
+      <section class="sports-panel">
+        <div class="sports-panel-head">
+          <h3>{html.escape(title)}</h3>
+          {f'<span class="sports-source">{html.escape(source)}</span>' if source else ''}
+        </div>
+        {sports_event_group('Proximos eventos', bucket.get('upcoming', []), empty_upcoming)}
+        {sports_event_group('Resultados recientes', bucket.get('recent_results', []), empty_results)}
+      </section>
     """
 
 
 def digest_section_card(title: str, items: list[str]) -> str:
     rows = "".join(f"<li>{html.escape(stringify_digest_item(item))}</li>" for item in items)
     return f"""
-        <article class="digest-card section-card">
-          <p class="eyebrow">{html.escape(title)}</p>
-          <ul>{rows or '<li>Sin novedades relevantes.</li>'}</ul>
-        </article>
+      <article class="mini-card">
+        <div class="mini-card-title">{html.escape(title)}</div>
+        <ul>{rows or '<li>Sin novedades relevantes.</li>'}</ul>
+      </article>
     """
 
 
@@ -1497,16 +1559,49 @@ def ai_report_card(items: list[str], digest_meta: dict[str, Any]) -> str:
         reason = stringify_digest_item(digest_meta.get("reason")) or "No hubo conexion con Azure OpenAI."
         body = f'<p class="ai-report-error">No hubo conexion con Azure OpenAI.</p><p class="ai-report-detail">{html.escape(reason)}</p>'
     return f"""
-        <section class="content-block ai-report-card">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Informe generado por IA</p>
-              <h2>Resumen detallado agrupado</h2>
-            </div>
-          </div>
+      <section class="feature-panel">
+        <div class="section-label">Informe IA</div>
+        <div class="feature-panel-body">
+          <h2>Resumen detallado agrupado</h2>
           {body}
-        </section>
+        </div>
+      </section>
     """
+
+
+def alert_banner_html(categories: dict[str, list[Article]], digest: dict[str, Any]) -> str:
+    featured_article = None
+    for key in ("alerts", "commute"):
+        items = categories.get(key) or []
+        if items:
+            featured_article = items[0]
+            break
+    if featured_article:
+        body = featured_article.translated_description or featured_article.description or featured_article.title
+        title = featured_article.translated_title or featured_article.title
+        tags = render_tags(featured_article.matched_terms)
+        return f"""
+      <div class="alert-banner">
+        <div class="alert-icon">!</div>
+        <div>
+          <div class="alert-title">{html.escape(title)}</div>
+          <div class="alert-body">{html.escape(body[:220] + ('...' if len(body) > 220 else ''))}</div>
+          {f'<div>{tags}</div>' if tags else ''}
+        </div>
+      </div>
+    """
+    alerts = digest.get("mobility_alerts", [])
+    if alerts:
+        return f"""
+      <div class="alert-banner">
+        <div class="alert-icon">!</div>
+        <div>
+          <div class="alert-title">Aviso operativo</div>
+          <div class="alert-body">{html.escape(stringify_digest_item(alerts[0]))}</div>
+        </div>
+      </div>
+    """
+    return ""
 
 
 def render_html(
@@ -1522,21 +1617,28 @@ def render_html(
     weather_now = weather["current"]
     daily = weather["daily"]
     tomorrow = weather["tomorrow"]
-    weekend_cards = "".join(forecast_card("Fin de semana", day) for day in weather["weekend"])
+    forecast_cards = [
+        forecast_card("Hoy", daily),
+        forecast_card("Manana", tomorrow),
+    ]
+    weekend_labels = ["Sabado", "Domingo"]
+    for idx, day in enumerate(weather["weekend"][:2]):
+        label = weekend_labels[idx] if idx < len(weekend_labels) else "Fin de semana"
+        forecast_cards.append(forecast_card(label, day))
     holiday_cards = "".join(holiday_card(holiday) for holiday in holidays)
     sports_errors = "".join(f"<li>{html.escape(item)}</li>" for item in sports.get("errors", []))
     llm_status = ""
     if digest_meta.get("source") != "azure_llm":
-        llm_status = '<p class="status-banner status-error">No hubo conexion con Azure OpenAI. Se muestra el fallback local.</p>'
+        llm_status = '<div class="system-note">Fallback local activo: no hubo conexion con Azure OpenAI en esta ejecucion.</div>'
     hourly_cards = []
     for hour in weather["next_hours"]:
+        rain_class = " high" if hour["precipitation_probability"] >= 40 else ""
         hourly_cards.append(
             f"""
-            <div class="hour-card">
-              <span class="hour-time">{hour['time']:%H:%M}</span>
-              <strong>{hour['temperature']:.0f}°</strong>
-              <span>{html.escape(WEATHER_CODE_LABELS.get(hour['weather_code'], 'Variable'))}</span>
-              <span>{hour['precipitation_probability']:.0f}% lluvia</span>
+            <div class="fc-item">
+              <div class="fc-hour">{hour['time']:%H:%M}</div>
+              <div class="fc-temp">{hour['temperature']:.0f}°</div>
+              <div class="fc-rain{rain_class}">{hour['precipitation_probability']:.0f}%</div>
             </div>
             """
         )
@@ -1545,31 +1647,25 @@ def render_html(
         cards = "".join(article_card(article) for article in categories.get(config["key"], []))
         category_sections.append(
             f"""
-            <section class="content-block">
-              <div class="section-heading">
-                <div>
-                  <p class="eyebrow">{html.escape(config['label'])}</p>
-                  <h2>{html.escape(config['description'])}</h2>
-                </div>
-              </div>
-              <div class="story-grid">
-                {cards or '<p class="empty-state">No se han recuperado titulares para esta seccion.</p>'}
+            <section>
+              <div class="section-label">{html.escape(config['label'])}</div>
+              <div class="news-grid">
+                {cards or '<div class="empty-panel">No se han recuperado titulares para esta seccion.</div>'}
               </div>
             </section>
             """
         )
-    digest_cards = "".join(
+    summary_cards = "".join(
         [
             digest_section_card("Resumen operativo", digest.get("summary", [])),
             digest_section_card("Movilidad y alertas", digest.get("mobility_alerts", [])),
-            digest_section_card("Clima", digest.get("climate", [])),
-            digest_section_card("Festivos cercanos", digest.get("holidays", [])),
             digest_section_card("Alemania", digest.get("germany", [])),
             digest_section_card("Deportes", digest.get("sports", [])),
+            digest_section_card("Clima", digest.get("climate", [])),
+            digest_section_card("Vigilar", digest.get("watchlist", [])),
         ]
     )
     ai_report_html = ai_report_card(digest.get("ai_report", []), digest_meta)
-    watchlist = "".join(f"<li>{html.escape(item)}</li>" for item in digest.get("watchlist", []))
     club_columns = "".join(
         sports_column(
             team_name,
@@ -1579,14 +1675,10 @@ def render_html(
         )
         for team_name, team_bucket in sports.get("clubs", {}).items()
     )
+    alert_banner = alert_banner_html(categories, digest)
     sports_section = f"""
-      <section class="content-block">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">Deporte</p>
-            <h2>Champions, motor, tenis y proximos partidos de los grandes equipos espanoles</h2>
-          </div>
-        </div>
+      <section>
+        <div class="section-label">Deporte</div>
         <div class="sports-grid">
           {sports_column('Champions League', sports.get('champions', {}), 'No hay partidos cercanos detectados de Champions League.', 'No hay resultados recientes detectados de Champions League.')}
           {sports_column('Formula 1', sports.get('formula1', {}), 'No hay gran premio cercano detectado.', 'No hay resultados recientes detectados de Formula 1.')}
@@ -1608,75 +1700,79 @@ def render_html(
     <meta name="description" content="Resumen local de Frankfurt con foco en transporte, alertas, clima y contexto urbano util para el dia." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,600;1,9..40,300&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <main class="page-shell">
-      <section class="hero">
-        <div class="hero-copy">
-          <p class="eyebrow">Frankfurt operativo</p>
+    <header>
+      <div class="logo">Frankfurt<span>.</span>Briefing</div>
+      <div class="header-meta">
+        <div><span class="live-dot"></span>EN VIVO · {html.escape(format_header_date(generated_at))}</div>
+        <div>Actualizado {html.escape(format_time_short(generated_at))}</div>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero-block">
+        <div class="headline-panel">
+          <div class="section-label">Resumen principal</div>
           <h1>{html.escape(digest.get("headline", "Briefing local para Frankfurt"))}</h1>
-          <p class="hero-text">Actualizado el {html.escape(format_datetime(generated_at))}. Solo incluye noticias de las ultimas 24 horas, clima de hoy y manana, proximo fin de semana y festivos cercanos.</p>
+          <p class="hero-text">Solo incluye noticias de las ultimas 24 horas, clima de hoy y manana, proximo fin de semana y festivos cercanos.</p>
           {llm_status}
         </div>
-        <div class="weather-panel">
-          <div class="weather-main">
-            <span class="eyebrow">Clima ahora</span>
-            <strong>{weather_now['temperature']:.1f}°C</strong>
-            <p>{html.escape(WEATHER_CODE_LABELS.get(weather_now['weather_code'], 'Condiciones variables'))}</p>
+      </section>
+
+      <section>
+        <div class="section-label">Clima ahora</div>
+        <div class="climate-strip">
+          <div>
+            <div class="temp-now">{weather_now['temperature']:.1f}<sub>°C</sub></div>
+            <div class="climate-desc">{html.escape(WEATHER_CODE_LABELS.get(weather_now['weather_code'], 'Condiciones variables'))} · Sensacion {weather_now['apparent_temperature']:.1f}°C</div>
           </div>
-          <div class="weather-stats">
-            <div><span>Sensacion</span><strong>{weather_now['apparent_temperature']:.1f}°C</strong></div>
-            <div><span>Lluvia</span><strong>{weather_now['precipitation_probability']:.0f}%</strong></div>
-            <div><span>Viento</span><strong>{weather_now['wind_speed']:.0f} km/h</strong></div>
-            <div><span>Rango hoy</span><strong>{daily['temp_min']:.0f}° / {daily['temp_max']:.0f}°</strong></div>
+          <div class="climate-stats">
+            <div class="stat-row">
+              <div class="stat"><div class="stat-val">{weather_now['precipitation_probability']:.0f}%</div><div class="stat-label">lluvia ahora</div></div>
+              <div class="stat"><div class="stat-val">{weather_now['wind_speed']:.0f} km/h</div><div class="stat-label">viento</div></div>
+              <div class="stat"><div class="stat-val">{daily['temp_min']:.0f}° / {daily['temp_max']:.0f}°</div><div class="stat-label">rango hoy</div></div>
+            </div>
+            <div class="forecast-scroll">{''.join(hourly_cards)}</div>
           </div>
-          <div class="hour-strip">{''.join(hourly_cards)}</div>
+          <div></div>
         </div>
       </section>
+
+      <section>
+        <div class="section-label">Hoy, manana y fin de semana</div>
+        <div class="day-cards">
+          {''.join(forecast_cards) or '<div class="empty-panel">No hay previsiones disponibles.</div>'}
+        </div>
+      </section>
+
+      {alert_banner}
       {ai_report_html}
-      <section class="utility-grid">
-        <article class="content-block compact-block">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Prevision diaria</p>
-              <h2>Hoy, manana y fin de semana</h2>
-            </div>
-          </div>
-          <div class="forecast-grid">
-            {forecast_card("Hoy", daily)}
-            {forecast_card("Manana", tomorrow)}
-            {weekend_cards or '<p class="empty-state">No hay todavia datos de fin de semana.</p>'}
-          </div>
-        </article>
-        <article class="content-block compact-block">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Calendario</p>
-              <h2>Festivos cercanos en Alemania y Hesse</h2>
-            </div>
-          </div>
-          <div class="holiday-grid">
-            {holiday_cards or '<p class="empty-state">No hay festivos en los proximos 45 dias.</p>'}
-          </div>
-        </article>
+
+      <section>
+        <div class="section-label">Radar operativo</div>
+        <div class="mini-grid">
+          {summary_cards}
+        </div>
       </section>
-      <section class="digest-grid briefing-grid">
-        {digest_cards}
+
+      <section>
+        <div class="section-label">Festivos cercanos - Alemania / Hesse</div>
+        <div class="holiday-row">
+          {holiday_cards or '<div class="empty-panel">No hay festivos en los proximos 45 dias.</div>'}
+        </div>
       </section>
-      <section class="digest-grid watchlist-grid">
-        <article class="digest-card">
-          <p class="eyebrow">Vigilar</p>
-          <ul>{watchlist}</ul>
-        </article>
-      </section>
+
       {sports_section}
       {''.join(category_sections)}
-      <footer class="site-footer">
-        <p>Fuentes: Google News RSS, Open-Meteo, Nager.Date, ESPN y Formula1.com. El resumen usa Azure OpenAI si hay secretos configurados; si no, aplica reglas locales.</p>
-      </footer>
     </main>
+
+    <footer>
+      <span>Fuentes: Google News RSS · Open-Meteo · Nager.Date · ESPN · Formula1.com</span>
+      <span>Frankfurt am Main, Hesse, DE</span>
+    </footer>
   </body>
 </html>
 """

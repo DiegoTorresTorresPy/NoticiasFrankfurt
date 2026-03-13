@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Frankfurt Briefing</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,600;1,9..40,300&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --surface: #12121a;
+    --surface2: #1a1a26;
+    --border: rgba(255,255,255,0.07);
+    --text: #e8e8f0;
+    --muted: #6b6b88;
+    --accent: #ff4d2e;
+    --accent2: #ffd24d;
+    --blue: #4d9eff;
+    --green: #3dffa0;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  
+  body {
+    font-family: 'DM Sans', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    line-height: 1.5;
+  }
+
+  /* ── HEADER ─────────────────────────────────── */
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 0 clamp(16px, 4vw, 48px);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: rgba(10,10,15,0.92);
+    backdrop-filter: blur(12px);
+  }
+  .logo {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: clamp(20px, 3vw, 28px);
+    letter-spacing: 0.12em;
+    color: var(--text);
+    padding: 16px 0;
+  }
+  .logo span { color: var(--accent); }
+  .header-meta {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--muted);
+    text-align: right;
+  }
+  .live-dot {
+    display: inline-block;
+    width: 6px; height: 6px;
+    background: var(--green);
+    border-radius: 50%;
+    margin-right: 6px;
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%,100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  /* ── LAYOUT ─────────────────────────────────── */
+  main {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: clamp(20px, 4vw, 48px) clamp(16px, 4vw, 48px);
+    display: grid;
+    gap: 24px;
+    grid-template-columns: 1fr;
+  }
+
+  /* ── SECTION LABEL ───────────────────────────── */
+  .section-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .section-label::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  /* ── CLIMATE STRIP ───────────────────────────── */
+  .climate-strip {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 24px;
+    align-items: center;
+  }
+  .temp-now {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: clamp(52px, 8vw, 80px);
+    line-height: 1;
+    color: var(--text);
+  }
+  .temp-now sub {
+    font-size: 0.35em;
+    color: var(--muted);
+    vertical-align: middle;
+  }
+  .climate-desc { font-size: 14px; color: var(--muted); margin-top: 4px; }
+  .climate-stats {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .stat-row {
+    display: flex;
+    gap: 24px;
+  }
+  .stat { font-size: 13px; }
+  .stat-val { font-weight: 600; color: var(--text); }
+  .stat-label { color: var(--muted); font-size: 11px; }
+  .forecast-scroll {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding-bottom: 4px;
+  }
+  .forecast-scroll::-webkit-scrollbar { display: none; }
+  .fc-item {
+    flex-shrink: 0;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    text-align: center;
+    min-width: 64px;
+  }
+  .fc-hour { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted); }
+  .fc-temp { font-weight: 600; font-size: 16px; margin: 4px 0; }
+  .fc-rain { font-size: 10px; color: var(--blue); }
+  .fc-rain.high { color: var(--accent); }
+
+  /* ── DAILY FORECAST CARDS ────────────────────── */
+  .day-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+  }
+  .day-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    position: relative;
+    overflow: hidden;
+  }
+  .day-card.today { border-color: rgba(255,77,46,0.3); }
+  .day-card.today::before {
+    content: 'HOY';
+    position: absolute; top: 10px; right: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px; letter-spacing: 0.1em;
+    color: var(--accent);
+  }
+  .day-name { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .day-range {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 28px;
+    letter-spacing: 0.04em;
+    line-height: 1;
+  }
+  .day-range .low { color: var(--muted); font-size: 0.7em; }
+  .day-cond { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .day-rain {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    margin-top: 8px;
+  }
+  .rain-bar {
+    height: 3px; background: var(--border); border-radius: 2px; margin-top: 4px;
+  }
+  .rain-fill {
+    height: 100%; border-radius: 2px; background: var(--blue);
+    transition: width 0.6s ease;
+  }
+  .rain-fill.danger { background: var(--accent); }
+
+  /* ── ALERTS BANNER ───────────────────────────── */
+  .alert-banner {
+    background: rgba(255,77,46,0.08);
+    border: 1px solid rgba(255,77,46,0.25);
+    border-left: 3px solid var(--accent);
+    border-radius: 8px;
+    padding: 14px 20px;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .alert-icon {
+    font-size: 18px;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .alert-title { font-weight: 600; font-size: 14px; margin-bottom: 3px; }
+  .alert-body { font-size: 13px; color: var(--muted); line-height: 1.4; }
+  .tag {
+    display: inline-block;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border-radius: 4px;
+    margin-right: 4px;
+    margin-top: 6px;
+  }
+  .tag-red { background: rgba(255,77,46,0.15); color: var(--accent); }
+  .tag-blue { background: rgba(77,158,255,0.15); color: var(--blue); }
+  .tag-yellow { background: rgba(255,210,77,0.15); color: var(--accent2); }
+  .tag-green { background: rgba(61,255,160,0.15); color: var(--green); }
+
+  /* ── NEWS GRID ───────────────────────────────── */
+  .news-grid {
+    display: grid;
+    gap: 10px;
+  }
+  .news-item {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 20px;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 16px;
+    align-items: start;
+    text-decoration: none;
+    color: inherit;
+    transition: border-color 0.2s, background 0.2s;
+  }
+  .news-item:hover {
+    border-color: rgba(255,255,255,0.15);
+    background: var(--surface2);
+  }
+  .priority-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    margin-top: 5px;
+    flex-shrink: 0;
+  }
+  .p-high { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+  .p-mid { background: var(--accent2); }
+  .p-low { background: var(--muted); }
+  .news-source {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--muted);
+    margin-bottom: 4px;
+    letter-spacing: 0.05em;
+  }
+  .news-title { font-size: 14px; font-weight: 500; line-height: 1.4; }
+  .news-summary { font-size: 12px; color: var(--muted); margin-top: 5px; line-height: 1.4; }
+  .news-time {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--muted);
+    white-space: nowrap;
+    padding-top: 2px;
+  }
+
+  /* ── HOLIDAYS ────────────────────────────────── */
+  .holiday-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px;
+  }
+  .holiday-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 20px;
+    display: flex;
+    gap: 16px;
+    align-items: center;
+  }
+  .days-badge {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 36px;
+    line-height: 1;
+    color: var(--accent2);
+    flex-shrink: 0;
+  }
+  .days-badge small {
+    display: block;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 0.08em;
+  }
+  .holiday-name { font-weight: 600; font-size: 14px; }
+  .holiday-date { font-size: 12px; color: var(--muted); margin-top: 3px; }
+
+  /* ── FOOTER ─────────────────────────────────── */
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 20px clamp(16px, 4vw, 48px);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+
+  /* ── RESPONSIVE ──────────────────────────────── */
+  @media (max-width: 640px) {
+    .climate-strip {
+      grid-template-columns: 1fr;
+      gap: 16px;
+    }
+    .stat-row { flex-wrap: wrap; gap: 12px; }
+    .news-item { grid-template-columns: auto 1fr; }
+    .news-time { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Frankfurt<span>.</span>Briefing</div>
+  <div class="header-meta">
+    <div><span class="live-dot"></span>EN VIVO · 13 MAR 2026</div>
+    <div>Actualizado 12:51 h</div>
+  </div>
+</header>
+
+<main>
+
+  <!-- CLIMA ACTUAL -->
+  <div>
+    <div class="section-label">🌦 Clima ahora</div>
+    <div class="climate-strip">
+      <div>
+        <div class="temp-now">12.5<sub>°C</sub></div>
+        <div class="climate-desc">Cubierto · Sensación 8.8°C</div>
+      </div>
+      <div class="climate-stats">
+        <div class="stat-row">
+          <div class="stat"><div class="stat-val">0%</div><div class="stat-label">lluvia ahora</div></div>
+          <div class="stat"><div class="stat-val">17 km/h</div><div class="stat-label">viento</div></div>
+          <div class="stat"><div class="stat-val">3° / 13°</div><div class="stat-label">rango hoy</div></div>
+        </div>
+        <div class="forecast-scroll">
+          <div class="fc-item"><div class="fc-hour">13h</div><div class="fc-temp">12°</div><div class="fc-rain">0%</div></div>
+          <div class="fc-item"><div class="fc-hour">14h</div><div class="fc-temp">13°</div><div class="fc-rain">0%</div></div>
+          <div class="fc-item"><div class="fc-hour">15h</div><div class="fc-temp">13°</div><div class="fc-rain">8%</div></div>
+          <div class="fc-item"><div class="fc-hour">16h</div><div class="fc-temp">13°</div><div class="fc-rain high">33%</div></div>
+          <div class="fc-item"><div class="fc-hour">17h</div><div class="fc-temp">13°</div><div class="fc-rain high">40%</div></div>
+          <div class="fc-item"><div class="fc-hour">18h</div><div class="fc-temp">12°</div><div class="fc-rain high">73%</div></div>
+          <div class="fc-item"><div class="fc-hour">19h</div><div class="fc-temp">12°</div><div class="fc-rain high">73%</div></div>
+          <div class="fc-item"><div class="fc-hour">20h</div><div class="fc-temp">12°</div><div class="fc-rain high">60%</div></div>
+        </div>
+      </div>
+      <div></div>
+    </div>
+  </div>
+
+  <!-- PREVISIÓN 3 DÍAS -->
+  <div>
+    <div class="section-label">📅 Hoy, mañana y fin de semana</div>
+    <div class="day-cards">
+      <div class="day-card today">
+        <div class="day-name">Viernes 13/3</div>
+        <div class="day-range">13° <span class="low">/ 3°</span></div>
+        <div class="day-cond">Lluvia ligera</div>
+        <div class="day-rain">🌧 90% lluvia<div class="rain-bar"><div class="rain-fill danger" style="width:90%"></div></div></div>
+      </div>
+      <div class="day-card">
+        <div class="day-name">Sábado 14/3</div>
+        <div class="day-range">10° <span class="low">/ 4°</span></div>
+        <div class="day-cond">Lluvia ligera</div>
+        <div class="day-rain">🌧 100% lluvia<div class="rain-bar"><div class="rain-fill danger" style="width:100%"></div></div></div>
+      </div>
+      <div class="day-card">
+        <div class="day-name">Domingo 15/3</div>
+        <div class="day-range">10° <span class="low">/ 2°</span></div>
+        <div class="day-cond">Cubierto</div>
+        <div class="day-rain">☁️ 5% lluvia<div class="rain-bar"><div class="rain-fill" style="width:5%"></div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ALERTA METEOROLÓGICA -->
+  <div class="alert-banner">
+    <div class="alert-icon">⚠️</div>
+    <div>
+      <div class="alert-title">Alerta oficial — Cambio de tiempo</div>
+      <div class="alert-body">Aviso meteorológico activo para Frankfurt. Posible nieve y cambios drásticos de temperatura previstos. Consultar actualizaciones del DWD.</div>
+      <span class="tag tag-red">warnung</span>
+      <span class="tag tag-blue">frankfurt</span>
+      <span class="tag tag-yellow">nieve posible</span>
+    </div>
+  </div>
+
+  <!-- MOVILIDAD -->
+  <div>
+    <div class="section-label">✈️ Movilidad y huelgas</div>
+    <div class="news-grid">
+      <a class="news-item" href="https://news.google.com/rss/articles/CBMiuAFBVV95cUxNU1d6SXZEUEd4bmlQVmpGdzVPZmhheThJRVF4bEU2TGJPVGw4UXdVTHlUaHpCZlhkYUdoalRuaWFvVThBRG9rYWlGdzZmVGl6dWpvekRnZUhYa1FXXzZaRnpNd2pXZFotYXVlSlRRekNSdnNodGhRSHpRMDNNQ2RVaEFmck5sYjluMXRENk9aTTRkNU1NcDFCcFN4d1U3Nms3RC1KbXUyeUd0VG1zV2l4N3J1RkozVUpV" target="_blank">
+        <div class="priority-dot p-high"></div>
+        <div>
+          <div class="news-source">upday News</div>
+          <div class="news-title">Más de 600 vuelos cancelados — Huelga de pilotos de Lufthansa en Frankfurt y Múnich</div>
+          <div class="news-summary">Grandes interrupciones en los aeropuertos de Frankfurt y Múnich. Miles de pasajeros afectados.</div>
+          <div><span class="tag tag-red">huelga</span><span class="tag tag-blue">frankfurt</span><span class="tag tag-red">vuelos</span></div>
+        </div>
+        <div class="news-time">Hace 1 h</div>
+      </a>
+      <a class="news-item" href="https://news.google.com/rss/articles/CBMikgFBVV95cUxQTzQ2T2J1VUl3dEt6Tm1tLTR0cjE0a2J0aVhYeW95NkZzb3dJWHZIVUxQbEJRM2pUdldDRkd4YmtjLXNybFlzT2p1UzJLR2h2bEJ2RHpaX0V3U2tmM3lYLVV3WU5uUjFwZTlWZ0VuTDU2TkYtOGlwU2NYT3RmeWpMRjdfQmhQdXZnUS1YbUNhSDA1Zw" target="_blank">
+        <div class="priority-dot p-mid"></div>
+        <div>
+          <div class="news-source">DIE ZEIT</div>
+          <div class="news-title">Huelga de pilotos paraliza cientos de vuelos de Lufthansa</div>
+          <div class="news-summary">El tráfico aéreo vuelve a quedar paralizado por el conflicto laboral en Lufthansa.</div>
+        </div>
+        <div class="news-time">Hace 7 h</div>
+      </a>
+      <a class="news-item" href="https://news.google.com/rss/articles/CBMirgFBVV95cUxPZU8tSXlmcjFjc2RXM0l5NEFpUkRweDFMWlpQM0dIZGkzQ29Ba1QzUEFyRzFNYzVpbHgxaVNZdmJVMTd5ckFNeV9fUm5Bbkttd0hVOVBBZTU2cm1hdEFNbFVHREpsYmtUTm9LcU1Oa0ZDZldvWWRIWDZ1WFVld3N4Wm1OQW9lblpBT2ZjaFhhSWlTUlR2Q19iTFNac0FWWmV0ZjdOdlM0WU5UbGFXT0E" target="_blank">
+        <div class="priority-dot p-mid"></div>
+        <div>
+          <div class="news-source">Der Standard</div>
+          <div class="news-title">Nuevamente cientos de vuelos cancelados por la huelga de Lufthansa</div>
+          <div class="news-summary">Gran descontento entre los pasajeros por la repetición de cancelaciones masivas.</div>
+        </div>
+        <div class="news-time">Hace 37 min</div>
+      </a>
+    </div>
+  </div>
+
+  <!-- ALERTAS Y EMERGENCIAS -->
+  <div>
+    <div class="section-label">🚨 Alertas y emergencias</div>
+    <div class="news-grid">
+      <a class="news-item" href="https://news.google.com/rss/articles/CBMipwFBVV95cUxOLWZQdTNZckR2X19VWDRWVlpjZHlNOU1ONklSQ0k0X1J1SldNTnF1MDFGbk9rOXhPcmhZQVA1aWp2NEEwRjRQVHJaLTVyN3gwcFNZT0o0b1JZSWhWbmpHQzdYVUs1cmFWcjh3dTlyZWNTWHhlNVAtYWhCM2VBRkZVSm0xVTdJeERNMXMyVTRtdUxRRklFZU16YTRfZ1Z5MUh5RlZsQmY3cw" target="_blank">
+        <div class="priority-dot p-mid"></div>
+        <div>
+          <div class="news-source">fnp.de</div>
+          <div class="news-title">Alerta oficial para Frankfurt — incluso nieve posible</div>
+          <div class="news-summary">Cambio de tiempo con advertencia meteorológica activa. Prepararse para condiciones adversas.</div>
+          <span class="tag tag-red">warnung</span><span class="tag tag-yellow">nieve</span>
+        </div>
+        <div class="news-time">Hace 2 h</div>
+      </a>
+      <a class="news-item" href="https://news.google.com/rss/articles/CBMi3AFBVV95cUxPM2NmcUw1TkRrNElRVXR4LWdrMWNiSGcwRUZyOGgtS2hmVmQwaTVzckFWRWlmbDV6V0VoT1RIYVZ1SnU5SWVkMElDZGlSUXBMR1N1M2J6LU4ySEdkbXV0UUZsb2hCV0QzbFpfWFdvaTY5OTlIS0lRWkJjdXpCbndUSXNXNnQzX05yYXRKUHBRd2VLdDJBbXNVVXFMcE11X01JMlVfZTVIejNWSFAyOXBqS1F2QTZZMVhwVm83b3V2cWhvX04wTHpraDlJdVFRcVIyTTAyeWtpSHF6ZHdr" target="_blank">
+        <div class="priority-dot p-low"></div>
+        <div>
+          <div class="news-source">Frankfurter Rundschau</div>
+          <div class="news-title">Accidente en la A3 cerca del aeropuerto — heridos y corte de vía</div>
+          <div class="news-summary">Colisión en la autopista A3 próxima al aeropuerto de Frankfurt. Varios heridos y cierre de tramo.</div>
+          <span class="tag tag-red">sperrung</span><span class="tag tag-blue">A3</span>
+        </div>
+        <div class="news-time">Hace 16 h</div>
+      </a>
+      <a class="news-item" href="https://news.google.com/rss/articles/CBMirgFBVV95cUxPTm5yZjlubXExRFhwWS0zTHJITGJKOEpKbTh5cE1qUUw4TjhQXzM2cG1KWE1uajVKbjhaZmt0YjAtdmxFTFlpT0Z1NVh5X00tVnVWdVNKRVZUakFveFVqcmVraVZpU09iT0VoOG1nb3oxc1I0eWZnazlXVHBXTVFYM0JQaEc3XzN1eTdWUVQ2ZmVBeDdiVlpOUU5GRm1tRWNSX3cxbllrYXByQnJmTUEw" target="_blank">
+        <div class="priority-dot p-low"></div>
+        <div>
+          <div class="news-source">Frankfurter Rundschau</div>
+          <div class="news-title">Robo en joyería de Frankfurt — policía busca testigos</div>
+          <div class="news-summary">Desconocido desvalijó una joyería en Frankfurt. La policía solicita información a posibles testigos.</div>
+          <span class="tag tag-yellow">polizei</span>
+        </div>
+        <div class="news-time">Hace 6 h</div>
+      </a>
+    </div>
+  </div>
+
+  <!-- CIUDAD -->
+  <div>
+    <div class="section-label">🏙 Ciudad y barrio</div>
+    <div class="news-grid">
+      <a class="news-item" href="https://news.google.com/rss/articles/CBMisAFBVV95cUxQTGg3Zjc2LUJ0T3BqTHJwangzZFp6VFJoTHB5UV9tekFMX3FqaXptYUNZNUlzd3ZmRDJFTHBxZjRES3p0QTBVWVVGcGtwTFFxdWM0TXE2ZnhwS1FBN1JfMWRRU01uTDBjMjQxSFFPa3A0eXBhRm9XQmtKdDlXTmJtTTBiWGFfUG5rcE9wNzhRbFRaOV9CYTlXS0stejV4X2ludlEySmJQcWl1bEpCem52UQ" target="_blank">
+        <div class="priority-dot p-low"></div>
+        <div>
+          <div class="news-source">FAZ</div>
+          <div class="news-title">Frankfurt refuerza controles de patinetes eléctricos</div>
+          <div class="news-summary">La ciudad endurece la regulación de e-scooters en respuesta al incremento de infracciones.</div>
+          <span class="tag tag-green">ciudad</span>
+        </div>
+        <div class="news-time">Hace 2 h</div>
+      </a>
+      <a class="news-item" href="https://news.google.com/rss/articles/CBMi2AFBVV95cUxORENtcGhhQmZyQ1B6bmFEVjZxQWFhS0RmaUpxc04tSEVWSVMzWndyN2dIbDdjTXRuQXVpSTJoVE1SdGo0c05yWTVyMVI3WC1DejduUHc2TnBMRDVnQld4UjhTd3poWUtQUUFuRHdfS3FXeEdOOW94Y1VybDdweDg4NDh6V19ocDlKWUcxNndNVkRCdEQtNmxHUFpoTmVxWERqZ3VBck13a2FIeGhlUkRfVUw3YWZLeU1IWVZNVEhHQmxYYTNuZi1wSkp3X1NlVUFTMXV1bjNGdjE" target="_blank">
+        <div class="priority-dot p-low"></div>
+        <div>
+          <div class="news-source">FAZ</div>
+          <div class="news-title">Frankfurt paga precios excesivos por terrenos para nuevas escuelas</div>
+          <div class="news-summary">El ayuntamiento habría abonado importes sobrevalorados en adquisiciones de suelo escolar.</div>
+          <span class="tag tag-yellow">frankfurt</span>
+        </div>
+        <div class="news-time">Hace 1 h</div>
+      </a>
+    </div>
+  </div>
+
+  <!-- ALEMANIA -->
+  <div>
+    <div class="section-label">🇩🇪 Alemania: economía y contexto</div>
+    <div class="news-grid">
+      <a class="news-item" href="https://news.google.com/rss/articles/CBMi0gFBVV95cUxNNzhMSWs0dmZrWFgwUnc0U1FtR0dGRFVrTkJfcDY2eUZEWjNFZl9ickEtcWx4amVfSVQwSWd2VzlhX3gwUENVdHZaWm9DZV9iQ1M2ei0zS1RrYWpBMWhuUENRakVNUkpRMGhJTlJ2d3VldC1JLUlQSzU4V1ZkREFBeGxhU3RQaGlaSTBZZV9FQ1A1MjV5RHBQQUtCdnhXcU9QQW5FSUhCYmJBQnhkdHFwMnF3UzZ2ZjhXbkQzY0g0Y18yS2YzVVZTRHdCYlAtSlZnMmc" target="_blank">
+        <div class="priority-dot p-mid"></div>
+        <div>
+          <div class="news-source">FOCUS online</div>
+          <div class="news-title">Experto advierte: Alemania no debe convertirse en un "país de huelgas permanentes"</div>
+          <div class="news-summary">Creciente preocupación por la frecuencia de paros laborales en distintos sectores del país.</div>
+          <span class="tag tag-red">huelga</span>
+        </div>
+        <div class="news-time">Hace 3 min</div>
+      </a>
+      <a class="news-item" href="#" target="_blank">
+        <div class="priority-dot p-low"></div>
+        <div>
+          <div class="news-source">Business Insider DE</div>
+          <div class="news-title">Los 7 alemanes más ricos menores de 30 — herederos milmillonarios que casi nadie conoce</div>
+          <div class="news-summary">El ranking Forbes revela un grupo de jóvenes herederos con fortunas multimillonarias poco conocidos públicamente.</div>
+          <span class="tag tag-green">finanzas</span>
+        </div>
+        <div class="news-time">Hace 21 min</div>
+      </a>
+    </div>
+  </div>
+
+  <!-- FESTIVOS -->
+  <div>
+    <div class="section-label">📆 Festivos cercanos — Alemania / Hesse</div>
+    <div class="holiday-row">
+      <div class="holiday-card">
+        <div class="days-badge">21<small>DÍAS</small></div>
+        <div>
+          <div class="holiday-name">Karfreitag</div>
+          <div class="holiday-date">Viernes Santo · 3 de abril</div>
+          <span class="tag tag-yellow">Nacional</span>
+        </div>
+      </div>
+      <div class="holiday-card">
+        <div class="days-badge">24<small>DÍAS</small></div>
+        <div>
+          <div class="holiday-name">Ostermontag</div>
+          <div class="holiday-date">Lunes de Pascua · 6 de abril</div>
+          <span class="tag tag-yellow">Nacional</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<footer>
+  <span>Fuentes: Google News RSS · Open-Meteo · Nager.Date · TheSportsDB</span>
+  <span>Frankfurt am Main, Hesse, DE</span>
+</footer>
+
+</body>
+</html>
