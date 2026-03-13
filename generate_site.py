@@ -159,6 +159,8 @@ class Article:
     score: int = 0
     impact_label: str = "Baja"
     matched_terms: list[str] = field(default_factory=list)
+    translated_title: str | None = None
+    translated_description: str | None = None
 
     @property
     def age_text(self) -> str:
@@ -627,6 +629,7 @@ def build_llm_prompt(
         article_rows.append(
             {
                 "titulo": article.title,
+                "link": article.link,
                 "fuente": article.source,
                 "categoria": article.category_label,
                 "impacto": article.impact_label,
@@ -681,9 +684,10 @@ def build_llm_prompt(
         "articulos": article_rows,
     }
     return (
-        'Devuelve solo JSON valido en espanol con las claves "headline", "ai_report", "summary", "mobility_alerts", "climate", "holidays", "germany", "sports", "watchlist". '
-        'En "ai_report" devuelve exactamente 5 parrafos relativamente largos y claros, en este orden: 1) clima y forecast, 2) movilidad y alertas, 3) Alemania economia/cultura, 4) deportes, 5) festivos cercanos. '
-        'Cada parrafo debe empezar por el nombre de la seccion y dos puntos. Cada parrafo debe comentar lo principal de las tarjetas relacionadas y sonar como un briefing continuo, no como titulares sueltos. '
+        'Devuelve solo JSON valido en espanol con las claves "headline", "ai_report_sections", "article_translations", "summary", "mobility_alerts", "climate", "holidays", "germany", "sports", "watchlist". '
+        'En "ai_report_sections" devuelve un objeto con estas claves exactas: "clima_forecast", "movilidad_alertas", "alemania", "deportes", "festivos". Cada valor debe ser un parrafo claro, relativamente largo y bien redactado en espanol. '
+        'El orden conceptual del briefing es: clima y forecast, movilidad y alertas, Alemania economia/cultura, deportes, festivos cercanos. '
+        'En "article_translations" devuelve una lista de objetos con "link", "translated_title" y "translated_description". Traduce al espanol solo los articulos que esten claramente en aleman; si ya estan en espanol o ingles, puedes dejarlos fuera. '
         "No incluyas markdown ni texto adicional. Usa frases claras, con algo mas de desarrollo que el resto del JSON.\n\n"
         f"{json.dumps(payload, ensure_ascii=False)}"
     )
@@ -771,10 +775,20 @@ def normalize_digest_section(value: Any, fallback: list[str]) -> list[str]:
 
 def normalize_digest_payload(digest: dict[str, Any]) -> dict[str, list[str] | str]:
     headline = stringify_digest_item(digest.get("headline")) or "Briefing local para Frankfurt con foco en movilidad y ciudad"
+    ai_report_sections = digest.get("ai_report_sections") if isinstance(digest.get("ai_report_sections"), dict) else {}
+    ai_report_fallback = []
+    if ai_report_sections:
+        ai_report_fallback = [
+            ai_report_sections.get("clima_forecast"),
+            ai_report_sections.get("movilidad_alertas"),
+            ai_report_sections.get("alemania"),
+            ai_report_sections.get("deportes"),
+            ai_report_sections.get("festivos"),
+        ]
     normalized = {
         "headline": headline,
         "ai_report": normalize_digest_section(
-            digest.get("ai_report"),
+            digest.get("ai_report", ai_report_fallback),
             [],
         ),
         "summary": normalize_digest_section(
@@ -849,9 +863,38 @@ def impact_class(label: str) -> str:
     return {"Alta": "impact-high", "Media": "impact-medium"}.get(label, "impact-low")
 
 
+def apply_article_translations(categories: dict[str, list[Article]], digest: dict[str, Any]) -> None:
+    translations = digest.get("article_translations")
+    if not isinstance(translations, list):
+        return
+    by_link: dict[str, dict[str, Any]] = {}
+    for item in translations:
+        if not isinstance(item, dict):
+            continue
+        link = str(item.get("link") or "").strip()
+        if not link:
+            continue
+        by_link[link] = item
+    if not by_link:
+        return
+    for articles in categories.values():
+        for article in articles:
+            translated = by_link.get(article.link)
+            if not translated:
+                continue
+            translated_title = stringify_digest_item(translated.get("translated_title"))
+            translated_description = stringify_digest_item(translated.get("translated_description"))
+            if translated_title:
+                article.translated_title = translated_title
+            if translated_description:
+                article.translated_description = translated_description
+
+
 def article_card(article: Article) -> str:
     tags = "".join(f"<li>{html.escape(term)}</li>" for term in article.matched_terms[:3])
-    description = article.description[:220] + ("..." if len(article.description) > 220 else "")
+    visible_title = article.translated_title or article.title
+    raw_description = article.translated_description or article.description
+    description = raw_description[:220] + ("..." if len(raw_description) > 220 else "")
     return f"""
         <article class="story-card">
           <div class="story-meta">
@@ -859,7 +902,7 @@ def article_card(article: Article) -> str:
             <span>{html.escape(article.source)}</span>
             <span>{html.escape(article.age_text)}</span>
           </div>
-          <h3><a href="{html.escape(article.link)}" target="_blank" rel="noreferrer">{html.escape(article.title)}</a></h3>
+          <h3><a href="{html.escape(article.link)}" target="_blank" rel="noreferrer">{html.escape(visible_title)}</a></h3>
           <p>{html.escape(description)}</p>
           <ul class="story-tags">{tags}</ul>
         </article>
@@ -1170,6 +1213,7 @@ def main() -> int:
         categories,
         sports,
     )
+    apply_article_translations(categories, digest)
     if errors:
         digest["watchlist"] = list(digest.get("watchlist", [])) + [f"Error de captura: {item}" for item in errors[:2]]
     write_output(
