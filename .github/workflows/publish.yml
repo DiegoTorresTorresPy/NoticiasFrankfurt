@@ -35,9 +35,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-
       - name: Generate site
         env:
           AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
@@ -47,10 +44,17 @@ jobs:
           AZURE_OPENAI_API_VERSION: ${{ secrets.AZURE_OPENAI_API_VERSION }}
         run: python generate_site.py
 
+      - name: Package Pages artifact
+        run: |
+          tar --dereference --hard-dereference -C dist -cvf github-pages.tar .
+          gzip -f github-pages.tar
+
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
-          path: ./dist
+          name: github-pages
+          path: ./github-pages.tar.gz
+          retention-days: 1
 
   deploy:
     needs: build
