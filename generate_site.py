@@ -693,6 +693,49 @@ def build_llm_prompt(
     )
 
 
+def build_reduced_llm_prompt(
+    weather: dict[str, Any],
+    holidays: list[Holiday],
+    categories: dict[str, list[Article]],
+    sports: dict[str, Any],
+) -> str:
+    payload = {
+        "weather": {
+            "actual": {
+                "temperatura": weather["current"]["temperature"],
+                "estado": WEATHER_CODE_LABELS.get(weather["current"]["weather_code"], "Condiciones variables"),
+            },
+            "hoy": serialize_day_forecast(weather["daily"]),
+            "manana": serialize_day_forecast(weather["tomorrow"]),
+            "fin_de_semana": [serialize_day_forecast(day) for day in weather["weekend"][:2]],
+        },
+        "holidays": [
+            {"nombre": holiday.name, "fecha": holiday.date.date().isoformat()}
+            for holiday in holidays[:3]
+        ],
+        "categories": {
+            key: [article.title for article in items[:2]]
+            for key, items in categories.items()
+        },
+        "sports": {
+            "champions": [event["title"] for event in sports.get("champions", [])[:2]],
+            "formula1": [event["title"] for event in sports.get("formula1", [])[:1]],
+            "motogp": [event["title"] for event in sports.get("motogp", [])[:1]],
+            "alcaraz": [event["title"] for event in sports.get("alcaraz", [])[:1]],
+            "clubs": {
+                key: [event["title"] for event in items[:1]]
+                for key, items in sports.get("clubs", {}).items()
+            },
+        },
+    }
+    return (
+        'Devuelve solo JSON valido con las claves "headline", "ai_report_sections", "summary", "mobility_alerts", "climate", "holidays", "germany", "sports", "watchlist". '
+        'En "ai_report_sections" usa exactamente las claves "clima_forecast", "movilidad_alertas", "alemania", "deportes", "festivos". '
+        "No incluyas article_translations ni markdown. Devuelve JSON pequeno, limpio y valido.\n\n"
+        f"{json.dumps(payload, ensure_ascii=False)}"
+    )
+
+
 def azure_chat_completion(
     endpoint: str,
     api_key: str,
@@ -726,6 +769,15 @@ def parse_or_repair_llm_json(
     try:
         return json.loads(content)
     except json.JSONDecodeError:
+        stripped = content.strip()
+        first_brace = stripped.find("{")
+        last_brace = stripped.rfind("}")
+        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+            candidate = stripped[first_brace:last_brace + 1]
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                pass
         repair_messages = [
             {
                 "role": "system",
@@ -788,6 +840,24 @@ def generate_llm_digest(
         finish_reason = choice.get("finish_reason")
         return digest, {"source": "azure_llm", "reason": None if finish_reason != "length" else "azure_length_truncated_but_repaired"}
     except (urllib.error.URLError, KeyError, IndexError, json.JSONDecodeError, TimeoutError) as exc:
+        try:
+            reduced_messages = [
+                {"role": "system", "content": "Eres un analista local de Frankfurt extremadamente practico. Devuelve JSON pequeno y valido."},
+                {"role": "user", "content": build_reduced_llm_prompt(weather, holidays, categories, sports)},
+            ]
+            reduced_payload = azure_chat_completion(
+                endpoint,
+                api_key,
+                deployment,
+                api_version,
+                reduced_messages,
+                900,
+            )
+            reduced_content = reduced_payload["choices"][0]["message"]["content"]
+            reduced_digest = parse_or_repair_llm_json(reduced_content, endpoint, api_key, deployment, api_version)
+            return reduced_digest, {"source": "azure_llm", "reason": "azure_reduced_retry"}
+        except (urllib.error.URLError, KeyError, IndexError, json.JSONDecodeError, TimeoutError):
+            pass
         return (
             fallback_digest(weather, articles, holidays, categories, sports),
             {"source": "fallback", "reason": f"azure_error: {exc}"},
