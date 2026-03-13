@@ -35,6 +35,11 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
       - name: Generate site
         env:
           AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
@@ -42,7 +47,7 @@ jobs:
           AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.AZURE_OPENAI_DEPLOYMENT_NAME }}
           AZURE_OPENAI_MODEL: ${{ secrets.AZURE_OPENAI_MODEL }}
           AZURE_OPENAI_API_VERSION: ${{ secrets.AZURE_OPENAI_API_VERSION }}
-        run: python generate_site.py
+        run: uv run generate_site.py
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4

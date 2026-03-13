@@ -15,10 +15,17 @@ Briefing operativo para Frankfurt con foco en transporte, alertas, clima y conte
 ## Ejecucion local
 
 ```powershell
-python generate_site.py
+uv run generate_site.py
 ```
 
 La salida se escribe en `dist/`.
+
+Si prefieres seguir usando `python` directamente, instala antes las dependencias del proyecto:
+
+```powershell
+python -m pip install beautifulsoup4
+python generate_site.py
+```
 
 ## Despliegue en GitHub Pages
 
@@ -32,6 +39,8 @@ Eso equivale a:
 
 - Invierno en Alemania: `06:30`, `12:30`, `18:30`
 - Verano en Alemania: `07:30`, `13:30`, `19:30`
+
+El despliegue usa `uv` y resuelve dependencias desde [`pyproject.toml`](./pyproject.toml), incluyendo `beautifulsoup4` para la agenda deportiva mejorada.
 
 ## Lo que tienes que hacer en GitHub
 

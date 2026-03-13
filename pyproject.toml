@@ -1,0 +1,8 @@
+[project]
+name = "noticias-frankfurt"
+version = "0.1.0"
+description = "Briefing local de Frankfurt con noticias, clima, festivos y agenda deportiva."
+requires-python = ">=3.11"
+dependencies = [
+    "beautifulsoup4>=4.14,<5",
+]
