@@ -44,16 +44,10 @@ jobs:
           AZURE_OPENAI_API_VERSION: ${{ secrets.AZURE_OPENAI_API_VERSION }}
         run: python generate_site.py
 
-      - name: Package Pages artifact
-        run: |
-          tar --dereference --hard-dereference -C dist -cvf github-pages.tar .
-          gzip -f github-pages.tar
-
       - name: Upload Pages artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-pages-artifact@v4
         with:
-          name: github-pages
-          path: ./github-pages.tar.gz
+          path: ./dist
           retention-days: 1
 
   deploy:
