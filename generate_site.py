@@ -769,7 +769,15 @@ def normalize_digest_section(value: Any, fallback: list[str]) -> list[str]:
     if not isinstance(value, list):
         value = [value]
     normalized = [stringify_digest_item(item) for item in value]
-    normalized = [item for item in normalized if item]
+    expanded: list[str] = []
+    for item in normalized:
+        if not item:
+            continue
+        if "///" in item:
+            expanded.extend(part.strip() for part in item.split("///") if part.strip())
+            continue
+        expanded.append(item)
+    normalized = expanded
     return normalized or fallback
 
 
