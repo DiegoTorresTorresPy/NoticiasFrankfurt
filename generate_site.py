@@ -1988,7 +1988,7 @@ def render_html(
       <section class="hero-block">
         <div class="headline-panel">
           <div class="section-label">Resumen principal</div>
-          <h1>{html.escape(digest.get("headline", "Briefing local para Frankfurt"))}</h1>
+          <h2 class="headline-title">{html.escape(digest.get("headline", "Briefing local para Frankfurt"))}</h2>
           <p class="hero-text">Solo incluye noticias de las ultimas 24 horas, clima de hoy y manana, proximo fin de semana y festivos cercanos.</p>
           {llm_status}
         </div>
