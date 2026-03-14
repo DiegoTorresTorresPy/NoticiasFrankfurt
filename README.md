@@ -33,12 +33,8 @@ El workflow esta en [`.github/workflows/publish.yml`](./.github/workflows/publis
 
 - En `push` a `main` o `master`
 - Manualmente con `workflow_dispatch`
-- En horario UTC `05:30`, `11:30` y `17:30`
-
-Eso equivale a:
-
-- Invierno en Alemania: `06:30`, `12:30`, `18:30`
-- Verano en Alemania: `07:30`, `13:30`, `19:30`
+- Cada hora en UTC (`0 * * * *`), además de en push y manualmente
+- Equivale aprox. al inicio de cada hora local en cada zona por cambio automático de huso horario.
 
 El despliegue usa `uv` y resuelve dependencias desde [`pyproject.toml`](./pyproject.toml), incluyendo `beautifulsoup4` para la agenda deportiva mejorada.
 

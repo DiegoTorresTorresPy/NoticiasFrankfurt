@@ -21,6 +21,10 @@ try:
     from bs4 import BeautifulSoup
 except ImportError:
     BeautifulSoup = None
+try:
+    import googlenewsdecoder
+except ImportError:
+    googlenewsdecoder = None
 
 ROOT = Path(__file__).resolve().parent
 ASSETS_DIR = ROOT / "assets"
@@ -81,6 +85,25 @@ CATEGORY_CONFIGS = [
 SPORTS_LOOKAHEAD_DAYS = 14
 SPORTS_LOOKBACK_DAYS = 10
 ESPN_TIMEZONE = ZoneInfo("America/New_York")
+GOOGLE_CONTEXT_CATEGORIES = {"commute", "alerts"}
+INITIALIZATION_KEYWORDS = {
+    "streik",
+    "huelga",
+    "paro",
+    "ausstand",
+    "lockout",
+    "sperrung",
+    "corte",
+}
+INITIALIZATION_PREFIXES = ("seit", "ab", "desde", "a partir", "starting", "since", "desde el", "desde la", "empieza", "empiezan", "entra", "entrara")
+INITIALIZATION_PREFIXES += ("am", "vom", "desde hoy", "ab dem", "ab dem", "ab dem", "starting from", "desde el", "desde mañana", "desde manana")
+DATE_DETECTION_RE = re.compile(
+    r"\b(?:\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?|\d{1,2}\s+(?:de\s+)?(?:ene|enero|feb|febrero|mar|marzo|abr|abril|may|mayo|jun|junio|jul|julio|ago|agosto|sep|sept|septiembre|setiembre|oct|octubre|nov|noviembre|dic|diciembre|jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december))\b|"
+    r"\b(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    re.IGNORECASE,
+)
+GOOGLE_ARTICLE_CACHE: dict[str, tuple[str | None, str]] = {}
+
 TEAM_SOURCES = {
     "Real Madrid": {
         "fixtures_url": "https://www.espn.com/soccer/team/fixtures/_/id/86/real-madrid",
@@ -186,6 +209,8 @@ class Article:
     matched_terms: list[str] = field(default_factory=list)
     translated_title: str | None = None
     translated_description: str | None = None
+    initialization_hint: str | None = None
+    source_url: str | None = None
 
     @property
     def age_text(self) -> str:
@@ -263,6 +288,243 @@ def strip_html(value: str) -> str:
     return html.unescape(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", value))).strip()
 
 
+def is_google_news_link(url: str) -> bool:
+    try:
+        host = (urllib.parse.urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host == "news.google.com" or host.startswith("news.google.")
+
+
+def normalize_candidate_url(raw_url: str) -> str | None:
+    if not raw_url:
+        return None
+    value = html.unescape(raw_url.strip())
+    if value.startswith("//"):
+        value = f"https:{value}"
+    if value.startswith("/"):
+        value = urllib.parse.urljoin("https://news.google.com", value)
+    if value.startswith("http://") or value.startswith("https://"):
+        return value
+    return None
+
+
+def is_source_url(url: str) -> bool:
+    try:
+        host = (urllib.parse.urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    if not host:
+        return False
+    if host == "news.google.com" or host.startswith("news.google."):
+        return False
+    return True
+
+
+def _extract_url_from_payload(value: Any) -> str | None:
+    if isinstance(value, str):
+        normalized = normalize_candidate_url(value.strip())
+        if normalized and is_source_url(normalized):
+            return normalized
+        return None
+    if isinstance(value, dict):
+        for key in ("url", "link", "source_url", "target", "target_url", "source", "canonical_url", "final", "final_url"):
+            candidate = _extract_url_from_payload(value.get(key))
+            if candidate:
+                return candidate
+        for item in value.values():
+            candidate = _extract_url_from_payload(item)
+            if candidate:
+                return candidate
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            candidate = _extract_url_from_payload(item)
+            if candidate:
+                return candidate
+    return None
+
+
+def _decode_with_googlenewsdecoder(url: str) -> str | None:
+    if googlenewsdecoder is None:
+        return None
+
+    candidates: list[Any] = []
+    for fn_name in (
+        "decode_google_news_url",
+        "decode_google_news",
+        "decode_news_url",
+        "decode_url",
+        "decode",
+    ):
+        fn = getattr(googlenewsdecoder, fn_name, None)
+        if callable(fn):
+            candidates.append(fn)
+
+    decoder_cls = getattr(googlenewsdecoder, "GoogleNewsDecoder", None)
+    if callable(decoder_cls):
+        try:
+            decoder = decoder_cls()
+        except Exception:
+            decoder = None
+        if decoder is not None:
+            for fn_name in ("decode_google_news_url", "decode_google_news", "decode_url", "decode", "get_source_url"):
+                fn = getattr(decoder, fn_name, None)
+                if callable(fn):
+                    candidates.append(fn)
+
+    for fn in candidates:
+        try:
+            decoded = fn(url)
+        except Exception:
+            continue
+        candidate = _extract_url_from_payload(decoded)
+        if candidate:
+            return candidate
+    return None
+
+
+def extract_text_from_html(raw_html: str) -> str:
+    if BeautifulSoup is None:
+        text = re.sub(r"<script[^>]*>.*?</script>", " ", raw_html, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.DOTALL | re.IGNORECASE)
+        return collapse_whitespace(re.sub(r"<[^>]+>", " ", text))
+    soup = BeautifulSoup(raw_html, "html.parser")
+    for element in soup(["script", "style", "noscript"]):
+        element.decompose()
+    body = soup.find("article") or soup.find("main") or soup.body
+    if body is None:
+        body = soup
+    return collapse_whitespace(body.get_text(" ", strip=True))
+
+
+def collect_urls_from_jsonld(payload: Any) -> list[str]:
+    urls: list[str] = []
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if isinstance(value, str) and key in {"url", "mainEntityOfPage", "sameAs", "@id"} and is_source_url(value):
+                urls.append(value)
+            elif key == "url" and isinstance(value, dict):
+                nested = value.get("url")
+                if isinstance(nested, str) and is_source_url(nested):
+                    urls.append(nested)
+            else:
+                urls.extend(collect_urls_from_jsonld(value))
+    elif isinstance(payload, list):
+        for item in payload:
+            urls.extend(collect_urls_from_jsonld(item))
+    return urls
+
+
+def extract_google_news_target_url(raw_html: str) -> str | None:
+    if BeautifulSoup is None:
+        for pattern in [
+            r"<link[^>]*rel=[\"']canonical[\"'][^>]*href=[\"']([^\"']+)[\"']",
+            r"<meta[^>]*property=[\"']og:url[\"'][^>]*content=[\"']([^\"']+)[\"']",
+            r"<meta[^>]*name=[\"']twitter:url[\"'][^>]*content=[\"']([^\"']+)[\"']",
+        ]:
+            match = re.search(pattern, raw_html, flags=re.IGNORECASE)
+            if match:
+                candidate = normalize_candidate_url(match.group(1))
+                if candidate and is_source_url(candidate):
+                    return candidate
+        return None
+
+    soup = BeautifulSoup(raw_html, "html.parser")
+    candidates = [
+        (soup.select_one("meta[property='og:url']"), "content"),
+        (soup.select_one("meta[name='twitter:url']"), "content"),
+        (soup.select_one("meta[property='twitter:url']"), "content"),
+        (soup.select_one("meta[property='article:canonical_url']"), "content"),
+        (soup.select_one("link[rel='canonical']"), "href"),
+        (soup.select_one("meta[itemprop='url']"), "content"),
+    ]
+    for tag, attr in candidates:
+        if not tag:
+            continue
+        candidate = normalize_candidate_url(tag.get(attr, ""))
+        if candidate and is_source_url(candidate):
+            return candidate
+
+    for script in soup.find_all("script", type="application/ld+json"):
+        script_content = script.get_text(" ", strip=True)
+        if not script_content:
+            continue
+        try:
+            payload = json.loads(script_content)
+        except json.JSONDecodeError:
+            continue
+        for candidate in collect_urls_from_jsonld(payload):
+            if is_source_url(candidate):
+                return candidate
+
+    for a_tag in soup.select("a[href]"):
+        candidate = normalize_candidate_url(a_tag.get("href", ""))
+        if candidate and is_source_url(candidate):
+            return candidate
+    return None
+
+
+def resolve_google_news_article(url: str) -> tuple[str | None, str]:
+    if not is_google_news_link(url):
+        return None, ""
+    cached = GOOGLE_ARTICLE_CACHE.get(url)
+    if cached is not None:
+        return cached
+    decoder_target = _decode_with_googlenewsdecoder(url)
+    if decoder_target:
+        try:
+            article_text = extract_text_from_html(fetch_url(decoder_target).decode("utf-8", errors="ignore"))
+        except Exception:
+            article_text = ""
+        GOOGLE_ARTICLE_CACHE[url] = (decoder_target, article_text)
+        return GOOGLE_ARTICLE_CACHE[url]
+    try:
+        raw_html = fetch_url(url).decode("utf-8", errors="ignore")
+    except Exception:
+        GOOGLE_ARTICLE_CACHE[url] = (None, "")
+        return None, ""
+    target_url = extract_google_news_target_url(raw_html)
+    if target_url == "":  # pragma: no cover - fallback
+        target_url = None
+    if target_url and is_google_news_link(target_url):
+        target_url = None
+    article_text = extract_text_from_html(raw_html)
+    GOOGLE_ARTICLE_CACHE[url] = (target_url, article_text)
+    return GOOGLE_ARTICLE_CACHE[url]
+
+
+def should_extract_initialization(article: Article) -> bool:
+    if article.category_key not in GOOGLE_CONTEXT_CATEGORIES:
+        return False
+    haystack = normalize_text(f"{article.title} {article.description}")
+    return any(term in haystack for term in INITIALIZATION_KEYWORDS)
+
+
+def extract_initialization_hint(article: Article, article_text: str) -> str | None:
+    haystack = normalize_text(f"{article.title} {article.description} {article_text}")
+    for match in DATE_DETECTION_RE.finditer(haystack):
+        phrase = haystack[max(0, match.start() - 45) : match.end() + 45]
+        if any(prefix in phrase for prefix in INITIALIZATION_PREFIXES):
+            return collapse_whitespace(f"Inicio estimado: {phrase}")
+    return None
+
+
+def enrich_google_news_article(article: Article, source_url: str | None = None) -> None:
+    if not is_google_news_link(article.link):
+        return
+    if not should_extract_initialization(article):
+        if source_url and is_source_url(source_url):
+            article.link = source_url
+        return
+    target_link, article_text = resolve_google_news_article(article.link)
+    if target_link:
+        article.link = target_link
+    elif source_url and is_source_url(source_url):
+        article.link = source_url
+    if article_text:
+        article.initialization_hint = extract_initialization_hint(article, article_text)
+
+
 def parse_google_news_feed(category: dict[str, Any]) -> list[Article]:
     query = urllib.parse.quote_plus(category["query"])
     url = f"https://news.google.com/rss/search?q={query}&hl=de&gl=DE&ceid=DE:de"
@@ -271,6 +533,8 @@ def parse_google_news_feed(category: dict[str, Any]) -> list[Article]:
     for item in root.findall("./channel/item"):
         title = (item.findtext("title") or "").strip()
         link = (item.findtext("link") or "").strip()
+        source_node = item.find("source")
+        source_url = (source_node.attrib.get("url") if source_node is not None and source_node.attrib else None) if isinstance(source_node, ET.Element) else None
         if not title or not link:
             continue
         published_at = None
@@ -288,8 +552,14 @@ def parse_google_news_feed(category: dict[str, Any]) -> list[Article]:
                 published_at=published_at,
                 category_key=category["key"],
                 category_label=category["label"],
+                source_url=source_url,
             )
         )
+        if category["key"] in GOOGLE_CONTEXT_CATEGORIES and should_extract_initialization(articles[-1]):
+            try:
+                enrich_google_news_article(articles[-1], source_url)
+            except Exception:
+                pass
     return articles
 
 
@@ -1447,6 +1717,7 @@ def article_card(article: Article) -> str:
     visible_title = article.translated_title or article.title
     raw_description = article.translated_description or article.description
     description = raw_description[:190] + ("..." if len(raw_description) > 190 else "")
+    init_hint = article.initialization_hint
     tags = render_tags(article.matched_terms)
     return f"""
       <a class="news-item" href="{html.escape(article.link)}" target="_blank" rel="noreferrer">
@@ -1455,6 +1726,7 @@ def article_card(article: Article) -> str:
           <div class="news-source">{html.escape(article.source)}</div>
           <div class="news-title">{html.escape(visible_title)}</div>
           <div class="news-summary">{html.escape(description)}</div>
+          {f'<div class=\"news-summary\">{html.escape(init_hint)}</div>' if init_hint else ''}
           {f'<div>{tags}</div>' if tags else ''}
         </div>
         <div class="news-time">{html.escape(article.age_text)}</div>
