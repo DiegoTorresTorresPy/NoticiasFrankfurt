@@ -96,7 +96,7 @@ INITIALIZATION_KEYWORDS = {
     "corte",
 }
 INITIALIZATION_PREFIXES = ("seit", "ab", "desde", "a partir", "starting", "since", "desde el", "desde la", "empieza", "empiezan", "entra", "entrara")
-INITIALIZATION_PREFIXES += ("am", "vom", "desde hoy", "ab dem", "ab dem", "ab dem", "starting from", "desde el", "desde mañana", "desde manana")
+INITIALIZATION_PREFIXES += ("am", "vom", "desde hoy", "ab dem", "ab dem", "ab dem", "starting from", "desde el", "desde mañana", "desde mañana")
 DATE_DETECTION_RE = re.compile(
     r"\b(?:\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?|\d{1,2}\s+(?:de\s+)?(?:ene|enero|feb|febrero|mar|marzo|abr|abril|may|mayo|jun|junio|jul|julio|ago|agosto|sep|sept|septiembre|setiembre|oct|octubre|nov|noviembre|dic|diciembre|jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december))\b|"
     r"\b(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
@@ -239,7 +239,7 @@ class Holiday:
         if delta_days == 0:
             return "Hoy"
         if delta_days == 1:
-            return "Manana"
+            return "Mañana"
         return f"En {delta_days} dias"
 
 
@@ -1175,7 +1175,7 @@ def fallback_digest(
     climate = [
         f"Ahora: {weather['current']['temperature']:.0f}°C y {WEATHER_CODE_LABELS.get(weather['current']['weather_code'], 'condiciones variables').lower()}.",
         f"Hoy: {weather['daily']['temp_min']:.0f}° / {weather['daily']['temp_max']:.0f}° con {weather['daily']['precipitation_probability_max']:.0f}% de lluvia maxima.",
-        f"Manana: {weather['tomorrow']['temp_min']:.0f}° / {weather['tomorrow']['temp_max']:.0f}°.",
+        f"Mañaana: {weather['tomorrow']['temp_min']:.0f}° / {weather['tomorrow']['temp_max']:.0f}°.",
     ]
     if weather["weekend"]:
         weekend_labels = ", ".join(
@@ -1285,7 +1285,7 @@ def build_llm_prompt(
             "viento": weather["current"]["wind_speed"],
             "estado": WEATHER_CODE_LABELS.get(weather["current"]["weather_code"], "Condiciones variables"),
             "hoy": serialize_day_forecast(weather["daily"]),
-            "manana": serialize_day_forecast(weather["tomorrow"]),
+            "mañana": serialize_day_forecast(weather["tomorrow"]),
             "fin_de_semana": [serialize_day_forecast(day) for day in weather["weekend"]],
         },
         "festivos_cercanos": [
@@ -1342,7 +1342,7 @@ def build_reduced_llm_prompt(
                 "estado": WEATHER_CODE_LABELS.get(weather["current"]["weather_code"], "Condiciones variables"),
             },
             "hoy": serialize_day_forecast(weather["daily"]),
-            "manana": serialize_day_forecast(weather["tomorrow"]),
+            "mañana": serialize_day_forecast(weather["tomorrow"]),
             "fin_de_semana": [serialize_day_forecast(day) for day in weather["weekend"][:2]],
         },
         "holidays": [
@@ -1891,7 +1891,7 @@ def render_html(
     tomorrow = weather["tomorrow"]
     forecast_cards = [
         forecast_card("Hoy", daily),
-        forecast_card("Manana", tomorrow),
+        forecast_card("Mañana", tomorrow),
     ]
     weekend_labels = ["Sabado", "Domingo"]
     for idx, day in enumerate(weather["weekend"][:2]):
@@ -1989,7 +1989,7 @@ def render_html(
         <div class="headline-panel">
           <div class="section-label">Resumen principal</div>
           <h2 class="headline-title">{html.escape(digest.get("headline", "Briefing local para Frankfurt"))}</h2>
-          <p class="hero-text">Solo incluye noticias de las ultimas 24 horas, clima de hoy y manana, proximo fin de semana y festivos cercanos.</p>
+          <p class="hero-text">Solo incluye noticias de las ultimas 24 horas, clima de hoy y mañana, proximo fin de semana y festivos cercanos.</p>
           {llm_status}
         </div>
       </section>
@@ -2014,7 +2014,7 @@ def render_html(
       </section>
 
       <section>
-        <div class="section-label">Hoy, manana y fin de semana</div>
+        <div class="section-label">Hoy, mañana y fin de semana</div>
         <div class="day-cards">
           {''.join(forecast_cards) or '<div class="empty-panel">No hay previsiones disponibles.</div>'}
         </div>

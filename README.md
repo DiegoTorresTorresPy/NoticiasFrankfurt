@@ -6,7 +6,7 @@ Briefing operativo para Frankfurt con foco en transporte, alertas, clima y conte
 
 - Consulta Google News RSS con busquedas enfocadas en movilidad, huelgas, alertas, ciudad y contexto social, filtrando a las ultimas 24 horas.
 - Añade bloques de Alemania para economia, finanzas, cultura y conciertos.
-- Consulta el forecast de Open-Meteo para la zona objetivo y destaca temperatura actual, lluvia, hoy, manana y el proximo fin de semana.
+- Consulta el forecast de Open-Meteo para la zona objetivo y destaca temperatura actual, lluvia, hoy, mañana y el proximo fin de semana.
 - Consulta festivos cercanos de Alemania y Hesse para anticipar cierres o cambios de ritmo en la ciudad.
 - Añade una agenda deportiva con Champions League, Formula 1, MotoGP, tenis si aparece Alcaraz y proximos partidos de Real Madrid, Barcelona y Atletico de Madrid.
 - Genera una pagina estatica lista para GitHub Pages.
