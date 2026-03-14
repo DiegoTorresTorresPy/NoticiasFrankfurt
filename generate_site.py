@@ -1726,7 +1726,7 @@ def article_card(article: Article) -> str:
           <div class="news-source">{html.escape(article.source)}</div>
           <div class="news-title">{html.escape(visible_title)}</div>
           <div class="news-summary">{html.escape(description)}</div>
-          {f'<div class=\"news-summary\">{html.escape(init_hint)}</div>' if init_hint else ''}
+          {f'<div class="news-summary">{html.escape(init_hint)}</div>' if init_hint else ''}
           {f'<div>{tags}</div>' if tags else ''}
         </div>
         <div class="news-time">{html.escape(article.age_text)}</div>
